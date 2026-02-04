@@ -1,0 +1,12 @@
+{
+  "chest": "chest.png",
+  "door": "door.png",
+  "item_generic": "item_generic.png",
+  "key": "key.png",
+  "mat_nails": "mat_nails.png",
+  "mat_planks": "mat_planks.png",
+  "mat_rope": "mat_rope.png",
+  "mix_station": "mix_station.png",
+  "npc_inn": "npc_inn.png",
+  "npc_shop": "npc_shop.png"
+}
