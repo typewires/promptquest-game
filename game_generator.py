@@ -39,6 +39,9 @@ class Config:
     IMAGE_QUALITY = "medium"  # high | medium | low
     # How many quest item sprites to generate per level (others use a generic icon).
     ITEM_SPRITES_PER_LEVEL = 1
+    # Cost-saving: make cure quests use a consistent princess patient sprite.
+    # When enabled, cure quests will bias/force the NPC to be "Princess ..." so baked princess sprites can be reused.
+    FORCE_CURE_PRINCESS = True
     IMAGE_MAX_RETRIES = 4
     IMAGE_RETRY_BASE_DELAY = 1.5
     DEBUG_SPRITES = True
@@ -1052,6 +1055,15 @@ RULES:
             # Force "sick" visuals for the NPC, and a clear healed variant.
             npc = game.get("npc", {})
             base_desc = npc.get("sprite_desc", "fantasy NPC")
+            # Cost-saving + clarity: keep the cure patient consistent as "Princess ...".
+            # This ensures baked princess sprites are reused and players immediately understand who is sick.
+            if Config.FORCE_CURE_PRINCESS and npc:
+                n = str(npc.get("name", "")).strip()
+                if "princess" not in n.lower():
+                    npc["name"] = f"Princess {n}" if n else "Princess"
+                if "princess" not in base_desc.lower():
+                    base_desc = f"princess in elegant dress with a small crown. {base_desc}"
+                npc["sprite_desc"] = base_desc
             if npc and "sick" not in (npc.get("sprite_desc", "").lower()):
                 npc["sprite_desc"] = base_desc + ". They look sick: pale skin, tired eyes, slumped posture, wrapped in a blanket or holding a stomach, with faint sweat."
             if len(quest["items"]) < 3:
@@ -1068,7 +1080,11 @@ RULES:
             if not quest.get("mix_station"):
                 quest["mix_station"] = {"name": "Cauldron", "sprite_desc": "small iron cauldron with green liquid", "x": 9, "y": 5}
             if not quest.get("npc_healed_sprite_desc"):
-                quest["npc_healed_sprite_desc"] = f"{base_desc}, now healthy and smiling with brighter colors and a relaxed posture"
+                # Keep "princess" in the healed description too so the baked healed sprite can be used.
+                healed_base = base_desc
+                if Config.FORCE_CURE_PRINCESS and "princess" not in healed_base.lower():
+                    healed_base = f"princess in elegant dress with crown. {healed_base}"
+                quest["npc_healed_sprite_desc"] = f"{healed_base}, now healthy and smiling with brighter colors and a relaxed posture"
             # Make the objective explicit (override vague AI text).
             npc_name = game.get("npc", {}).get("name") or "the sick NPC"
             quest["goal"] = f"Heal {npc_name}"
