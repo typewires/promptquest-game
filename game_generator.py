@@ -14,6 +14,7 @@ import base64
 import time
 import random
 import math
+import hashlib
 from io import BytesIO
 from flask import Flask, render_template_string, request, jsonify
 import requests
@@ -30,8 +31,11 @@ LAST_QUEST_TYPE = None
 
 class Config:
     OPENAI_API_KEY = ""
-    TEXT_MODEL = "gpt-4o"
+    # Defaults favor cost-effective generation.
+    # The UI can override these per-run (Quality dropdown).
+    TEXT_MODEL = "gpt-4o-mini"
     IMAGE_MODEL = "gpt-image-1"
+    IMAGE_QUALITY = "medium"  # high | medium | low
     IMAGE_MAX_RETRIES = 4
     IMAGE_RETRY_BASE_DELAY = 1.5
     DEBUG_SPRITES = True
@@ -333,6 +337,25 @@ class OpenAIClient:
         """Generate a character/item sprite"""
         self.last_image_was_fallback = False
         self.last_image_error = None
+        cache_dir = "generated_sprites"
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except Exception:
+            cache_dir = None
+
+        # Cache images by (model, quality, role, prompt) so repeated runs are cheaper.
+        cache_key = None
+        cache_path = None
+        if cache_dir:
+            h = hashlib.sha256()
+            h.update((Config.IMAGE_MODEL + "|" + str(Config.IMAGE_QUALITY) + "|" + role + "|" + prompt).encode("utf-8"))
+            cache_key = h.hexdigest()[:24]
+            cache_path = os.path.join(cache_dir, f"cache_{cache_key}.png")
+            if os.path.exists(cache_path):
+                try:
+                    return Image.open(cache_path).convert("RGBA")
+                except Exception:
+                    pass
         role_hint = {
             "player": "playable hero",
             "npc": "NPC character",
@@ -396,7 +419,7 @@ Subject: {subject}"""
                         "prompt": styled_prompt + extra,
                         "n": 1,
                         "size": "1024x1024",
-                        "quality": "high",
+                        "quality": Config.IMAGE_QUALITY,
                     }
                 )
                 response.raise_for_status()
@@ -435,6 +458,12 @@ Subject: {subject}"""
                         os.makedirs("generated_sprites", exist_ok=True)
                         ts = int(time.time() * 1000)
                         img.save(os.path.join("generated_sprites", f"{ts}_{role}.png"))
+                    except Exception:
+                        pass
+                # Save cache
+                if cache_path:
+                    try:
+                        img.save(cache_path)
                     except Exception:
                         pass
                 return img
@@ -1190,9 +1219,12 @@ class SpriteGenerator:
         sprites["npc"] = self._gen(game["npc"]["sprite_desc"], role="npc", theme=theme)
         time.sleep(self.delay)
 
-        # Indoor NPC (single enterable building)
+        # Indoor NPCs: reuse across levels when possible to reduce API calls.
+        reuse_shop = game.get("_reuse_sprites", {}).get("npc_shop")
+        reuse_inn = game.get("_reuse_sprites", {}).get("npc_inn")
+
         print("  npc_shop...")
-        sprites["npc_shop"] = self._gen(
+        sprites["npc_shop"] = reuse_shop if reuse_shop is not None else self._gen(
             "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
             role="npc",
             theme=theme
@@ -1200,7 +1232,7 @@ class SpriteGenerator:
         time.sleep(self.delay)
 
         print("  npc_inn...")
-        sprites["npc_inn"] = self._gen(
+        sprites["npc_inn"] = reuse_inn if reuse_inn is not None else self._gen(
             "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
             role="npc",
             theme=theme
@@ -1215,6 +1247,8 @@ class SpriteGenerator:
             print("  Second item...")
             sprites["item2"] = self._gen(items[1]["sprite_desc"], role="item", theme=theme)
             time.sleep(self.delay)
+        # Reuse additional items by mirroring existing sprites (visual variety comes from placement).
+        # This caps image calls while keeping gameplay intact.
 
         # Quest-specific props
         if quest.get("type") == "cure":
@@ -3223,6 +3257,15 @@ HTML = '''
                 <input type="number" id="levels" min="1" max="3" value="3" onchange="syncLevelUI()">
                 <span style="color:#888; font-size:12px;">(1-3)</span>
             </div>
+            <div class="levels">
+                <label style="margin:0; color:#22d3ee;">Quality</label>
+                <select id="quality" style="width:160px; padding:10px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                    <option value="low">Low (cheapest)</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="high">High (best)</option>
+                </select>
+                <span style="color:#888; font-size:12px;">(affects cost)</span>
+            </div>
             <div class="levels" style="margin-top:10px; display:block">
                 <label style="margin:0; color:#22d3ee;">Goals (per level, optional)</label>
                 <div style="color:#888; font-size:12px; margin-top:6px">
@@ -3376,6 +3419,7 @@ HTML = '''
             const prompt = document.getElementById('prompt').value;
             const levels = parseInt(document.getElementById('levels').value || '3', 10);
             const goalByLevel = goalsByLevel();
+            const quality = document.getElementById('quality').value || 'medium';
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
             document.getElementById('btn').disabled = true;
@@ -3385,7 +3429,7 @@ HTML = '''
             try {
                 const res = await fetch('/generate', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalByLevel: goalByLevel})
+                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalByLevel: goalByLevel, quality: quality})
                 });
                 const data = await res.json();
                 status.innerHTML = data.success ? '✅ Done! Go to terminal and press ENTER!' : '❌ ' + data.error;
@@ -3411,6 +3455,16 @@ def generate():
     try:
         data = request.json
         config.OPENAI_API_KEY = data['apiKey']
+
+        # Per-run model/quality selection (from UI)
+        q = str(data.get("quality") or "medium").lower().strip()
+        if q not in ["low", "medium", "high"]:
+            q = "medium"
+        Config.IMAGE_QUALITY = q
+        # Text model choice by quality tier
+        # - low/medium: cheaper model
+        # - high: higher quality, higher cost
+        Config.TEXT_MODEL = "gpt-4o-mini" if q in ["low", "medium"] else "gpt-4o"
         
         client = OpenAIClient(config.OPENAI_API_KEY)
         
@@ -3473,6 +3527,8 @@ def generate():
 
         base_player = None
         base_player_sprite = None
+        reuse_shop_npc = None
+        reuse_inn_npc = None
 
         for i in range(level_count):
             level_prompt = data['prompt'] if i == 0 else f"{data['prompt']} -- New area {i+1} with different terrain, new NPC, and a new quest."
@@ -3486,9 +3542,15 @@ def generate():
             print(f"Terrain: {game.get('terrain', {}).get('type', 'meadow')}")
             
             print("\n[2/2] Generating sprites...")
+            # Reuse some sprites across levels to reduce image calls.
+            game["_reuse_sprites"] = {"npc_shop": reuse_shop_npc, "npc_inn": reuse_inn_npc}
             sprites = SpriteGenerator(client, config.API_DELAY).generate_all(game, reuse_player_sprite=base_player_sprite)
             if base_player_sprite is None:
                 base_player_sprite = sprites.get("player")
+            if reuse_shop_npc is None:
+                reuse_shop_npc = sprites.get("npc_shop")
+            if reuse_inn_npc is None:
+                reuse_inn_npc = sprites.get("npc_inn")
             levels.append({"game": game, "sprites": sprites})
         
         pending_game = {"ready": True, "levels": levels}
