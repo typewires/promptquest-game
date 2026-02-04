@@ -1045,6 +1045,14 @@ class SpriteGenerator:
             theme=theme
         )
         time.sleep(self.delay)
+
+        print("  npc_inn...")
+        sprites["npc_inn"] = self._gen(
+            "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
+            role="npc",
+            theme=theme
+        )
+        time.sleep(self.delay)
         
         if items:
             print("  Item...")
@@ -1090,6 +1098,22 @@ class SpriteGenerator:
             door = quest.get("door", {})
             sprites["door"] = self._gen(door.get("sprite_desc", "stone door"), role="door", theme=theme)
             time.sleep(self.delay)
+
+        # Repair materials (used by the shop UI + visuals)
+        if quest.get("type") == "repair_bridge":
+            mats = {it.get("id"): it for it in (quest.get("items") or [])}
+            if "planks" in mats:
+                print("  Planks...")
+                sprites["mat_planks"] = self._gen(mats["planks"].get("sprite_desc", "stack of wooden planks tied with rope"), role="item", theme=theme)
+                time.sleep(self.delay)
+            if "rope" in mats:
+                print("  Rope...")
+                sprites["mat_rope"] = self._gen(mats["rope"].get("sprite_desc", "coiled rope with a knot, tan color"), role="item", theme=theme)
+                time.sleep(self.delay)
+            if "nails" in mats:
+                print("  Nails...")
+                sprites["mat_nails"] = self._gen(mats["nails"].get("sprite_desc", "small pouch of iron nails with a few nails visible"), role="item", theme=theme)
+                time.sleep(self.delay)
         
         total_calls = len(sprites)
         print(f"\n  Total API calls: {total_calls}")
@@ -1490,15 +1514,44 @@ class InteriorRenderer:
         for x in range(2, self.mw - 2):
             pygame.draw.rect(screen, self.wall2, (x * ts + 6, ts + 6, ts - 12, ts - 12), border_radius=4)
 
-        # Shelves / decor
-        for x in range(2, self.mw - 2, 4):
-            pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 3 - 12, 10))
-            # Bottles
-            bx = x * ts + 16
-            by = 2 * ts + 2
-            pygame.draw.rect(screen, self.accent, (bx, by + 14, 10, 14), border_radius=2)
-            pygame.draw.rect(screen, (200, 120, 255), (bx + 22, by + 18, 10, 10), border_radius=2)
-            pygame.draw.rect(screen, (120, 255, 180), (bx + 44, by + 16, 10, 12), border_radius=2)
+        # Theme decor
+        if self.theme in ["shop", "apothecary"]:
+            # Shelves / decor
+            for x in range(2, self.mw - 2, 4):
+                pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 3 - 12, 10))
+                # Bottles
+                bx = x * ts + 16
+                by = 2 * ts + 2
+                pygame.draw.rect(screen, self.accent, (bx, by + 14, 10, 14), border_radius=2)
+                pygame.draw.rect(screen, (200, 120, 255), (bx + 22, by + 18, 10, 10), border_radius=2)
+                pygame.draw.rect(screen, (120, 255, 180), (bx + 44, by + 16, 10, 12), border_radius=2)
+
+            # Counter near the middle
+            cx = self.mw // 2
+            pygame.draw.rect(screen, self.shelf, (cx * ts - ts * 2, 6 * ts, ts * 4, ts), border_radius=6)
+            pygame.draw.rect(screen, (60, 40, 30), (cx * ts - ts * 2 + 10, 6 * ts + 10, ts * 4 - 20, ts - 18), border_radius=6)
+        elif self.theme == "inn":
+            # Beds (left + right)
+            bed_color = (210, 210, 235)
+            quilt = (150, 80, 90)
+            pillow = (235, 235, 245)
+            # Left bed
+            pygame.draw.rect(screen, bed_color, (2 * ts, 3 * ts, ts * 4, ts * 2), border_radius=8)
+            pygame.draw.rect(screen, quilt, (2 * ts + 10, 3 * ts + 18, ts * 4 - 20, ts * 2 - 28), border_radius=8)
+            pygame.draw.rect(screen, pillow, (2 * ts + 16, 3 * ts + 12, ts, ts // 2), border_radius=6)
+            # Right bed
+            pygame.draw.rect(screen, bed_color, ((self.mw - 6) * ts, 3 * ts, ts * 4, ts * 2), border_radius=8)
+            pygame.draw.rect(screen, (80, 120, 170), ((self.mw - 6) * ts + 10, 3 * ts + 18, ts * 4 - 20, ts * 2 - 28), border_radius=8)
+            pygame.draw.rect(screen, pillow, ((self.mw - 6) * ts + 16, 3 * ts + 12, ts, ts // 2), border_radius=6)
+
+            # Table + mug
+            pygame.draw.rect(screen, self.shelf, (self.mw // 2 * ts - ts, 6 * ts, ts * 2, ts), border_radius=6)
+            pygame.draw.circle(screen, (240, 210, 120), (self.mw // 2 * ts, 6 * ts + ts // 2), 6)
+            pygame.draw.rect(screen, (255, 255, 255), (self.mw // 2 * ts - 3, 6 * ts + ts // 2 - 3, 6, 6), border_radius=2)
+
+            # Rug
+            pygame.draw.rect(screen, (120, 60, 40), (self.mw // 2 * ts - ts * 2, 8 * ts, ts * 4, ts * 2), border_radius=10)
+            pygame.draw.rect(screen, (160, 90, 60), (self.mw // 2 * ts - ts * 2 + 10, 8 * ts + 10, ts * 4 - 20, ts * 2 - 20), border_radius=10)
 
         # Warm light pool
         glow = pygame.Surface((self.mw * ts, self.mh * ts), pygame.SRCALPHA)
@@ -1518,6 +1571,24 @@ class InteriorRenderer:
             solid.add((self.mw - 1, y))
         # Carve doorway
         solid.discard((self.door_x, self.mh - 1))
+
+        # Theme-specific blocking decor (so interiors feel different)
+        ts = self.ts
+        if self.theme in ["shop", "apothecary"]:
+            # Counter
+            cx = self.mw // 2
+            for x in range(cx - 2, cx + 2):
+                solid.add((x, 6))
+        elif self.theme == "inn":
+            # Beds block their tiles
+            for x in range(2, 6):
+                solid.add((x, 3))
+                solid.add((x, 4))
+            for x in range(self.mw - 6, self.mw - 2):
+                solid.add((x, 3))
+                solid.add((x, 4))
+            # Table
+            solid.add((self.mw // 2, 6))
         return solid
 
 
@@ -1604,6 +1675,7 @@ class GameEngine:
         self.scene = "outdoor"  # or "indoor"
         self.current_building = None
         self.money = 60
+        self.sleep_pending = False
 
         # Repair bridge state
         self.bridge_repaired = False
@@ -1621,6 +1693,25 @@ class GameEngine:
         entrance_inn = self._find_open_tile(12, mh // 2, solid=self.solid_outdoor)
         door_x = self.config.MAP_WIDTH // 2
 
+        shop_goods = [
+            {"id": "planks", "name": "Bridge Planks (sturdy)", "price": 20},
+            {"id": "rope", "name": "Hemp Rope Coil", "price": 15},
+            {"id": "nails", "name": "Iron Nails (pouch)", "price": 10},
+        ]
+        # If this run isn't a bridge repair, make shop items more general-purpose flavor.
+        if self.quest_type != "repair_bridge":
+            shop_goods = [
+                {"id": "torch", "name": "Traveler's Torch", "price": 8},
+                {"id": "bandage", "name": "Bandage Wraps", "price": 6},
+                {"id": "map", "name": "Hand‑drawn Map", "price": 12},
+            ]
+
+        inn_goods = [
+            {"id": "sleep", "name": "Rent a Bed (sleep)", "price": 12},
+            {"id": "stew", "name": "Hearty Stew", "price": 6},
+            {"id": "tea", "name": "Warm Tea", "price": 5},
+        ]
+
         self.buildings = [
             {
                 "name": "Shop",
@@ -1631,11 +1722,7 @@ class GameEngine:
                 "exit": (door_x, self.config.MAP_HEIGHT - 1),
                 "npc_pos": (self.config.MAP_WIDTH // 2 + 2, 4),
                 "npc_sprite_key": "npc_shop",
-                "goods": [
-                    {"id": "planks", "name": "Wooden Planks", "price": 20},
-                    {"id": "rope", "name": "Sturdy Rope", "price": 15},
-                    {"id": "nails", "name": "Iron Nails", "price": 10},
-                ],
+                "goods": shop_goods,
                 "items": [],
             },
             {
@@ -1646,11 +1733,9 @@ class GameEngine:
                 "entrance": entrance_inn,
                 "exit": (door_x, self.config.MAP_HEIGHT - 1),
                 "npc_pos": (self.config.MAP_WIDTH // 2 + 2, 4),
-                "npc_sprite_key": "npc_shop",  # reuse indoor NPC sprite to keep API calls stable
-                "goods": [
-                    {"id": "tea", "name": "Warm Tea", "price": 5},
-                    {"id": "bread", "name": "Traveler's Bread", "price": 7},
-                ],
+                "npc_sprite_key": "npc_inn",
+                "goods": inn_goods,
+                "bed_pos": (3, 4),
                 "items": [],
             },
         ]
@@ -2070,6 +2155,19 @@ class GameEngine:
         needed = {"planks", "rope", "nails"}
         return needed.issubset(set(self.items_collected))
 
+    def _toggle_day_night(self) -> str:
+        """Toggle between day and night (treat anything non-day as night)."""
+        cur = (self.game.get("time_of_day") or "day").lower()
+        nxt = "night" if cur == "day" else "day"
+        return nxt
+
+    def _apply_time_of_day(self, new_time: str):
+        self.game["time_of_day"] = new_time
+        # Update terrain palette and effects behavior.
+        allow_flash = new_time in ["night", "dusk", "sunset"]
+        self.effects = EffectsManager(allow_flash=allow_flash)
+        self.terrain = TerrainRenderer(self.game, self.config)
+
     def buy_good(self, idx: int):
         if not self.current_building:
             return
@@ -2148,6 +2246,8 @@ class GameEngine:
                     if b.get("goods"):
                         gtxt = ", ".join([f"{i+1}:{g['name']}({g['price']}g)" for i, g in enumerate(b["goods"][:3])])
                         self.msg(f"Entered {b['name']}. Buy: {gtxt}. Gold: {self.money}g.")
+                    if b.get("theme") == "inn":
+                        self.msg("Inn: walk to a bed and press SPACE to sleep (costs gold).")
                     return
         else:
             ex, ey = self.current_building["exit"] if self.current_building else (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 2)
@@ -2157,6 +2257,13 @@ class GameEngine:
                 ox, oy = self.current_building["entrance"] if self.current_building else (3, self.config.MAP_HEIGHT // 2)
                 self.player_x = ox * ts
                 self.player_y = (oy + 1) * ts
+                # If the player rented a bed in the inn, apply a time skip when they return outside.
+                if getattr(self, "sleep_pending", False) and self.current_building and self.current_building.get("theme") == "inn":
+                    new_time = self._toggle_day_night()
+                    self._apply_time_of_day(new_time)
+                    self.sleep_pending = False
+                    self.msg(f"You wake up. It is now {new_time}.")
+                    return
                 self.msg("Back outside.")
                 return
 
@@ -2219,6 +2326,22 @@ class GameEngine:
                     msg = summary
                 self.msg(msg[:150])
             return
+
+        # Indoor interactions (inn sleeping)
+        if self.scene == "indoor" and self.current_building:
+            if self.current_building.get("theme") == "inn":
+                bed = self.current_building.get("bed_pos")
+                if bed:
+                    bx, by = bed
+                    if abs(bx - px) <= 1 and abs(by - py) <= 1:
+                        price = 12
+                        if self.money < price:
+                            self.msg(f"Not enough gold to rent a bed. Need {price}g.")
+                            return
+                        self.money -= price
+                        self.sleep_pending = True
+                        self.msg(f"You sleep peacefully... (-{price}g). Leave the inn to see time change.")
+                        return
 
         # Bridge interaction (repair_bridge quest)
         if self.quest_type == "repair_bridge" and self.bridge_tiles:
@@ -2306,16 +2429,32 @@ class GameEngine:
         # Draw broken/repaired bridge (outdoor)
         if self.scene == "outdoor" and self.bridge_tiles:
             ts = self.config.TILE_SIZE
-            for bx, by in self.bridge_tiles:
+            # Bridge is vertical (two tiles). Draw as a continuous structure.
+            tiles = sorted(list(self.bridge_tiles), key=lambda t: (t[1], t[0]))
+            for idx, (bx, by) in enumerate(tiles):
                 x = bx * ts
                 y = by * ts
+                mid = y + ts // 2
+
                 if self.bridge_repaired:
-                    pygame.draw.rect(self.screen, (140, 100, 70), (x, y + ts//2 - 10, ts, 20))
-                    pygame.draw.line(self.screen, (110, 80, 55), (x + 8, y + ts//2 - 8), (x + ts - 8, y + ts//2 - 8), 3)
-                    pygame.draw.line(self.screen, (110, 80, 55), (x + 8, y + ts//2 + 8), (x + ts - 8, y + ts//2 + 8), 3)
+                    # Fixed bridge: wooden planks + side ropes
+                    pygame.draw.rect(self.screen, (150, 110, 75), (x, mid - 12, ts, 24))
+                    for px in range(x + 10, x + ts - 10, 12):
+                        pygame.draw.line(self.screen, (120, 85, 55), (px, mid - 10), (px, mid + 10), 2)
+                    # Side ropes
+                    pygame.draw.line(self.screen, (210, 190, 140), (x + 6, mid - 14), (x + ts - 6, mid - 14), 2)
+                    pygame.draw.line(self.screen, (210, 190, 140), (x + 6, mid + 14), (x + ts - 6, mid + 14), 2)
                 else:
-                    pygame.draw.rect(self.screen, (90, 70, 60), (x, y + ts//2 - 10, ts, 20))
-                    pygame.draw.rect(self.screen, (60, 50, 45), (x + ts//2 - 12, y + ts//2 - 12, 24, 24), border_radius=4)
+                    # Broken bridge: partial boards with a gap + rubble
+                    pygame.draw.rect(self.screen, (95, 75, 60), (x, mid - 12, ts, 24))
+                    # Missing center boards
+                    pygame.draw.rect(self.screen, (35, 35, 45), (x + ts // 2 - 16, mid - 10, 32, 20), border_radius=4)
+                    # Broken planks
+                    pygame.draw.line(self.screen, (120, 85, 55), (x + 8, mid - 10), (x + ts // 2 - 18, mid - 10), 3)
+                    pygame.draw.line(self.screen, (120, 85, 55), (x + ts // 2 + 18, mid + 10), (x + ts - 8, mid + 10), 3)
+                    # Nails / debris specks
+                    pygame.draw.circle(self.screen, (40, 40, 50), (x + ts // 2 - 6, mid + 4), 2)
+                    pygame.draw.circle(self.screen, (40, 40, 50), (x + ts // 2 + 8, mid - 2), 2)
         
         # Draw items (outdoor pickups)
         for i, item in enumerate(self.items):
@@ -2334,7 +2473,14 @@ class GameEngine:
                 gx = self.config.MAP_WIDTH // 2 - 3 + gi * 2
                 gy = 6
                 ox, oy = self._float_offset(g["id"])
-                self._blit_sprite("item", gx, gy, (ox, oy))
+                sprite = "item"
+                if g["id"] == "planks" and "mat_planks" in self.surfaces:
+                    sprite = "mat_planks"
+                elif g["id"] == "rope" and "mat_rope" in self.surfaces:
+                    sprite = "mat_rope"
+                elif g["id"] == "nails" and "mat_nails" in self.surfaces:
+                    sprite = "mat_nails"
+                self._blit_sprite(sprite, gx, gy, (ox, oy))
 
         # Draw key (for key_and_door quest)
         if self.quest_type == "key_and_door" and self.key_spawned and not self.key_collected and self.key_pos:
@@ -2524,6 +2670,10 @@ class GameEngine:
                 hint = "Press 1/2/3 to buy items."
                 if self.quest_type == "repair_bridge":
                     hint = "Buy materials to repair the broken bridge. Press 1/2/3 to buy."
+                elif b.get("theme") == "inn":
+                    hint = "Inn: sleep by a bed (SPACE) to advance time. 1/2/3 buy snacks."
+                else:
+                    hint = "Shop items are helpful flavor (some quests require specific materials). Press 1/2/3 to buy."
                 self.screen.blit(self.font.render(hint, True, (220, 220, 220)), (x, y))
                 y += 20
                 for i, g in enumerate(goods[:3]):
