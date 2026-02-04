@@ -32,7 +32,7 @@ python game_generator.py
 3. Open the local page (shown in the terminal) and:
 - Paste your `OPENAI_API_KEY`
 - Enter a prompt
-- Choose number of levels (1–6)
+- Choose number of levels (1–3)
 - Click **Generate**
 
 Then return to the terminal and press **ENTER** to start playing.
@@ -64,23 +64,31 @@ If you don’t specify goals, the game picks them and varies them across levels.
 - `lost_item`
 - `repair_bridge`
 
-### How goal selection works
+### How goal selection works (UI + prompt directives)
+This version supports **up to 3 levels** per run.
+
 You have three ways to influence goals:
 
-1. **Select a goal pool (all levels)** — optional UI checkboxes “Goal Pool”
-   - Check the goals you want included in this run (ex: only `cure` + `lost_item`).
-   - The game will **only sample from the selected pool** across all levels.
-   - If you select none, the game samples from all allowed goals.
+1. **Per-level goal options (UI checkboxes)** — “Goals (per level, optional)”
+   - Each level has its own set of goal checkboxes.
+   - If you check multiple goals under a level, that level will **randomly pick one** of the checked goals (this is “stacking options”, not multi-quests).
+   - If you leave a level blank, it will be randomized from all allowed goals.
+   - The generator tries to **avoid repeating** the same goal type across levels when possible.
 
-2. **Implicit goal (Level 1 only)** — inferred from your prompt text
-   - If your prompt contains keywords like “sick / cure / heal”, Level 1 becomes `cure`.
-   - If your prompt contains “key / door / unlock”, Level 1 becomes `key_and_door`.
-   - If your prompt contains “lost / missing / stolen”, Level 1 becomes `lost_item`.
-   - If your prompt contains “bridge / repair”, Level 1 becomes `repair_bridge`.
+2. **Per-level explicit goals (inside your prompt)** — highest priority
+   - You can force goals with text like:
+     - `Level 1: cure`
+     - `Level 2: key_and_door`
+     - `Level 3: repair_bridge`
+   - These override any UI selections for that level.
 
-3. **No goal specified** — fully automatic
-   - The game samples goals from the allowed list.
-   - It avoids repeats **until the pool is exhausted**, then repeats are allowed.
+3. **Implicit goal (Level 1 only)** — inferred from your prompt text
+   - If Level 1 isn’t explicitly set, the game may infer it from keywords:
+     - “sick / cure / heal” → `cure`
+     - “key / door / unlock” → `key_and_door`
+     - “lost / missing / stolen” → `lost_item`
+     - “bridge / repair” → `repair_bridge`
+   - Inference is only used when it makes sense for the level’s available options.
 
 ### Are later levels AI-generated goals?
 Later levels are **not free-form “invented” by the AI**. Instead:

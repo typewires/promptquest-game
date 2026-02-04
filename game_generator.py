@@ -51,6 +51,34 @@ class Config:
 ALLOWED_GOALS = ["cure", "key_and_door", "lost_item", "repair_bridge"]
 
 
+def parse_level_goal_overrides(prompt: str) -> dict[int, str]:
+    """
+    Parse prompt directives like:
+      "Level 1: cure"
+      "level2 - key_and_door"
+    Returns {1: "cure", 2: "key_and_door", ...} (1-based levels).
+    """
+    if not prompt:
+        return {}
+    out: dict[int, str] = {}
+    p = str(prompt)
+    import re
+
+    # Match: level 1: cure  /  level2 - key_and_door
+    pat = re.compile(
+        r"(?i)\\blevel\\s*([1-3])\\s*[:\\-]\\s*\\b(cure|key_and_door|lost_item|repair_bridge)\\b"
+    )
+    for m in pat.finditer(p):
+        try:
+            idx = int(m.group(1))
+        except Exception:
+            continue
+        gt = normalize_goal_type(m.group(2))
+        if idx and gt:
+            out[idx] = gt
+    return out
+
+
 def normalize_goal_type(value: str | None) -> str | None:
     """Return a canonical goal type or None."""
     if not value:
@@ -2636,31 +2664,73 @@ HTML = '''
             <button class="rand-btn" onclick="randomPrompt()">🎲 Generate Random Prompt</button>
             <div class="levels">
                 <label style="margin:0; color:#22d3ee;">Levels</label>
-                <input type="number" id="levels" min="1" max="6" value="3">
-                <span style="color:#888; font-size:12px;">(1-6)</span>
+                <input type="number" id="levels" min="1" max="3" value="3" onchange="syncLevelUI()">
+                <span style="color:#888; font-size:12px;">(1-3)</span>
             </div>
             <div class="levels" style="margin-top:10px; display:block">
-                <label style="margin:0; color:#22d3ee;">Goal Pool (optional)</label>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px">
-                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                        <input type="checkbox" class="goalOpt" value="cure"> Cure (heal sick NPC)
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                        <input type="checkbox" class="goalOpt" value="key_and_door"> Key + Door
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                        <input type="checkbox" class="goalOpt" value="lost_item"> Lost Item
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                        <input type="checkbox" class="goalOpt" value="repair_bridge"> Repair Bridge (shop)
-                    </label>
-                </div>
+                <label style="margin:0; color:#22d3ee;">Goals (per level, optional)</label>
                 <div style="color:#888; font-size:12px; margin-top:6px">
-                    If none selected: goals are auto-picked and varied across levels.
+                    Pick goal options under each level. If you leave a level blank, it will be randomized.
                 </div>
                 <div style="display:flex; gap:10px; margin-top:8px">
                     <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Auto Goals</button>
-                    <button class="ex-btn" onclick="randomGoals()" style="background:#0b1220">🎲 Random Goals</button>
+                    <button class="ex-btn" onclick="randomGoals()" style="background:#0b1220">🎲 Randomize Goals</button>
+                </div>
+
+                <div id="goalLevels" style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap">
+                    <div class="card" style="padding:12px; margin:0; width: 100%">
+                        <div style="font-weight:800; color:#cbd5e1; margin-bottom:8px">Level 1 goals</div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap">
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL1" value="cure"> Cure
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL1" value="key_and_door"> Key+Door
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL1" value="lost_item"> Lost Item
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL1" value="repair_bridge"> Repair Bridge
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="goalL2" class="card" style="padding:12px; margin:0; width: 100%">
+                        <div style="font-weight:800; color:#cbd5e1; margin-bottom:8px">Level 2 goals</div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap">
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL2" value="cure"> Cure
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL2" value="key_and_door"> Key+Door
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL2" value="lost_item"> Lost Item
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL2" value="repair_bridge"> Repair Bridge
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="goalL3" class="card" style="padding:12px; margin:0; width: 100%">
+                        <div style="font-weight:800; color:#cbd5e1; margin-bottom:8px">Level 3 goals</div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap">
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL3" value="cure"> Cure
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL3" value="key_and_door"> Key+Door
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL3" value="lost_item"> Lost Item
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input type="checkbox" class="goalOptL3" value="repair_bridge"> Repair Bridge
+                            </label>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2709,31 +2779,47 @@ HTML = '''
             clearGoals();
         }
 
-        function selectedGoals() {
-            const els = document.querySelectorAll('.goalOpt');
-            const out = [];
-            els.forEach(e => { if (e.checked) out.push(e.value); });
-            return out;
-        }
-
         function clearGoals() {
-            document.querySelectorAll('.goalOpt').forEach(e => { e.checked = false; });
+            document.querySelectorAll('.goalOptL1, .goalOptL2, .goalOptL3').forEach(e => { e.checked = false; });
         }
 
         function randomGoals() {
             clearGoals();
             const all = ['cure','key_and_door','lost_item','repair_bridge'];
-            // Pick 1-3 random goals for the pool.
-            const count = 1 + Math.floor(Math.random() * 3);
-            all.sort(() => Math.random() - 0.5);
-            const pick = new Set(all.slice(0, count));
-            document.querySelectorAll('.goalOpt').forEach(e => { e.checked = pick.has(e.value); });
+            const pickN = (n) => {
+                const c = all.slice().sort(() => Math.random() - 0.5);
+                return new Set(c.slice(0, n));
+            };
+            // For each level, pick 1-2 candidate goals (stacking options per level).
+            const l1 = pickN(1 + Math.floor(Math.random() * 2));
+            const l2 = pickN(1 + Math.floor(Math.random() * 2));
+            const l3 = pickN(1 + Math.floor(Math.random() * 2));
+            document.querySelectorAll('.goalOptL1').forEach(e => { e.checked = l1.has(e.value); });
+            document.querySelectorAll('.goalOptL2').forEach(e => { e.checked = l2.has(e.value); });
+            document.querySelectorAll('.goalOptL3').forEach(e => { e.checked = l3.has(e.value); });
+        }
+
+        function syncLevelUI() {
+            const levels = parseInt(document.getElementById('levels').value || '3', 10);
+            const show2 = levels >= 2;
+            const show3 = levels >= 3;
+            document.getElementById('goalL2').style.display = show2 ? 'block' : 'none';
+            document.getElementById('goalL3').style.display = show3 ? 'block' : 'none';
+        }
+
+        function goalsByLevel() {
+            const grab = (cls) => {
+                const out = [];
+                document.querySelectorAll(cls).forEach(e => { if (e.checked) out.push(e.value); });
+                return out;
+            };
+            return [grab('.goalOptL1'), grab('.goalOptL2'), grab('.goalOptL3')];
         }
         async function generate() {
             const key = document.getElementById('apiKey').value;
             const prompt = document.getElementById('prompt').value;
             const levels = parseInt(document.getElementById('levels').value || '3', 10);
-            const goalTypes = selectedGoals();
+            const goalByLevel = goalsByLevel();
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
             document.getElementById('btn').disabled = true;
@@ -2743,13 +2829,15 @@ HTML = '''
             try {
                 const res = await fetch('/generate', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalTypes: goalTypes})
+                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalByLevel: goalByLevel})
                 });
                 const data = await res.json();
                 status.innerHTML = data.success ? '✅ Done! Go to terminal and press ENTER!' : '❌ ' + data.error;
             } catch (e) { status.innerHTML = '❌ ' + e.message; }
             document.getElementById('btn').disabled = false;
         }
+        // Initialize visibility
+        syncLevelUI();
     </script>
 </body>
 </html>
@@ -2778,33 +2866,54 @@ def generate():
         designer = GameDesigner(client)
         levels = []
         level_count = int(data.get("levels", 3))
-        level_count = max(1, min(6, level_count))
+        level_count = max(1, min(3, level_count))
 
         # Pick quest types:
-        # - If the user selects a goal pool (checkboxes), only sample from that pool.
-        # - Otherwise, sample from all allowed goal types.
-        # - If the prompt implies a goal, use it for level 1 (only if it's in the pool).
-        # - Fill remaining levels by sampling goal types, avoiding repeats until exhausted.
-        selected = []
-        for raw in (data.get("goalTypes") or []):
-            gt = normalize_goal_type(raw)
-            if gt and gt not in selected:
-                selected.append(gt)
-        base_types = selected if selected else list(ALLOWED_GOALS)
-        first = infer_goal_from_prompt(data.get("prompt", ""))
+        # - Prompt can specify per-level goals, e.g. "Level 2: key_and_door".
+        # - UI can specify per-level goal options (stacking) — multiple goals checked under a level means
+        #   "pick one of these for that level".
+        # - If neither prompt nor UI specifies a level, we randomize from all allowed goals.
+        # - We try to avoid repeats across levels until we've exhausted the pool.
+        prompt = data.get("prompt", "")
+        overrides = parse_level_goal_overrides(prompt)
+        by_level_raw = data.get("goalByLevel") or []
+
+        # Normalize UI selections into 1-based map.
+        ui_by_level: dict[int, list[str]] = {}
+        for i in range(min(3, len(by_level_raw))):
+            opts: list[str] = []
+            for raw in (by_level_raw[i] or []):
+                gt = normalize_goal_type(raw)
+                if gt and gt not in opts:
+                    opts.append(gt)
+            if opts:
+                ui_by_level[i + 1] = opts
+
+        all_goals = list(ALLOWED_GOALS)
+        used: list[str] = []
         quest_types: list[str] = []
-        if first in base_types:
-            quest_types.append(first)
-        remaining = [t for t in base_types if t not in quest_types]
-        while len(quest_types) < level_count:
-            if not remaining:
-                remaining = list(base_types)
-            random.shuffle(remaining)
-            while remaining and len(quest_types) < level_count:
-                t = remaining.pop()
-                # Avoid repeats until we've exhausted the pool.
-                if t not in quest_types or len(quest_types) >= len(base_types):
-                    quest_types.append(t)
+        inferred_first = infer_goal_from_prompt(prompt)
+
+        for lvl in range(1, level_count + 1):
+            # Priority: explicit prompt override > UI options > inferred first-level > random.
+            forced = overrides.get(lvl)
+            if forced:
+                quest_types.append(forced)
+                used.append(forced)
+                continue
+
+            pool = ui_by_level.get(lvl, []) or all_goals
+            # Level 1 inference only matters if it’s in the pool.
+            if lvl == 1 and inferred_first in pool:
+                quest_types.append(inferred_first)
+                used.append(inferred_first)
+                continue
+
+            # Avoid repeats if possible.
+            candidates = [g for g in pool if g not in used] or list(pool)
+            pick = random.choice(candidates)
+            quest_types.append(pick)
+            used.append(pick)
 
         base_player = None
         base_player_sprite = None
