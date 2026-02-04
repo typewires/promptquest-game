@@ -67,11 +67,10 @@ If you don’t specify goals, the game picks them and varies them across levels.
 ### How goal selection works
 You have three ways to influence goals:
 
-1. **Explicit goals (all levels)** — optional UI field “Goals (optional)”
-   - Enter a comma-separated plan like:
-     - `cure,key_and_door,lost_item`
-   - The game uses them in order for Level 1..N (extra goals are ignored).
-   - If you provide fewer goals than levels, the remaining levels are filled automatically.
+1. **Select a goal pool (all levels)** — optional UI checkboxes “Goal Pool”
+   - Check the goals you want included in this run (ex: only `cure` + `lost_item`).
+   - The game will **only sample from the selected pool** across all levels.
+   - If you select none, the game samples from all allowed goals.
 
 2. **Implicit goal (Level 1 only)** — inferred from your prompt text
    - If your prompt contains keywords like “sick / cure / heal”, Level 1 becomes `cure`.
@@ -159,11 +158,6 @@ Some levels include enterable buildings (e.g., a shop/inn).
 - `game_generator.py`: everything (Flask UI + generator + Pygame engine)
 - `generated_sprites/`: sprite cache (ignored by git)
 - `.env.example`: example environment file (placeholder only)
-
-## Security / Keys
-- **Do not commit real API keys.**
-- This repo ignores `.env` via `.gitignore`.
-- `.env.example` contains placeholders (safe to commit).
 
 ## Troubleshooting
 

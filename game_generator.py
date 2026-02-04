@@ -789,7 +789,7 @@ RULES:
     def _normalize_game(self, game: dict) -> dict:
         """Ensure required quest fields exist and sanitize missing data."""
         quest = game.get("quest", {})
-        allowed = {"cure", "key_and_door", "lost_item"}
+        allowed = set(ALLOWED_GOALS)
         if quest.get("type") not in allowed:
             quest["type"] = random.choice(list(allowed))
 
@@ -807,8 +807,9 @@ RULES:
         if quest["type"] == "cure":
             # Force "sick" visuals for the NPC, and a clear healed variant.
             npc = game.get("npc", {})
+            base_desc = npc.get("sprite_desc", "fantasy NPC")
             if npc and "sick" not in (npc.get("sprite_desc", "").lower()):
-                npc["sprite_desc"] = npc.get("sprite_desc", "fantasy NPC") + ". They look sick: pale skin, tired eyes, slumped posture, wrapped in a blanket or with a hand on stomach."
+                npc["sprite_desc"] = base_desc + ". They look sick: pale skin, tired eyes, slumped posture, wrapped in a blanket or holding a stomach, with faint sweat."
             if len(quest["items"]) < 3:
                 base = quest["items"][0]
                 while len(quest["items"]) < 3:
@@ -823,8 +824,10 @@ RULES:
             if not quest.get("mix_station"):
                 quest["mix_station"] = {"name": "Cauldron", "sprite_desc": "small iron cauldron with green liquid", "x": 9, "y": 5}
             if not quest.get("npc_healed_sprite_desc"):
-                npc_desc = game.get("npc", {}).get("sprite_desc", "kind villager")
-                quest["npc_healed_sprite_desc"] = f"{npc_desc}, now healthy and smiling with brighter colors"
+                quest["npc_healed_sprite_desc"] = f"{base_desc}, now healthy and smiling with brighter colors and a relaxed posture"
+            # Make the objective explicit (override vague AI text).
+            npc_name = game.get("npc", {}).get("name") or "the sick NPC"
+            quest["goal"] = f"Heal {npc_name}"
 
         # Key and door requirements
         if quest["type"] == "key_and_door":
@@ -1026,6 +1029,15 @@ class SpriteGenerator:
 
         # Quest-specific props
         if quest.get("type") == "cure":
+            print("  Sick NPC...")
+            # Use a dedicated sick sprite for clarity in-game.
+            sprites["npc_sick"] = self._gen(
+                game.get("npc", {}).get("sprite_desc", "sick fantasy NPC with pale skin and tired eyes"),
+                role="npc",
+                theme=theme
+            )
+            time.sleep(self.delay)
+
             print("  Mix station...")
             mix = quest.get("mix_station", {})
             sprites["mix_station"] = self._gen(mix.get("sprite_desc", "small potion cauldron"), role="cauldron", theme=theme)
@@ -1698,6 +1710,53 @@ class GameEngine:
                             return nx, ny
         return x, y
 
+    def _compute_reachable(self, solid_set: set[tuple[int, int]], start: tuple[int, int]) -> set[tuple[int, int]]:
+        """Return set of tiles reachable via 4-neighborhood from start (excluding solid tiles)."""
+        sx, sy = start
+        if (sx, sy) in solid_set:
+            # If the starting tile is blocked for some reason, treat it as reachable anyway so we can recover.
+            solid_set = set(solid_set)
+            solid_set.discard((sx, sy))
+        w, h = self.config.MAP_WIDTH, self.config.MAP_HEIGHT
+        q = [(sx, sy)]
+        seen = {(sx, sy)}
+        while q:
+            x, y = q.pop(0)
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in solid_set and (nx, ny) not in seen:
+                    seen.add((nx, ny))
+                    q.append((nx, ny))
+        return seen
+
+    def _pick_free_reachable(
+        self,
+        preferred: tuple[int, int],
+        reachable: set[tuple[int, int]],
+        occupied: set[tuple[int, int]],
+        solid_set: set[tuple[int, int]],
+    ) -> tuple[int, int]:
+        """
+        Pick a reachable, non-solid, non-occupied tile near preferred. Falls back to any reachable tile.
+        This prevents items spawning in isolated pockets (e.g., behind water/rocks).
+        """
+        px, py = preferred
+        if (px, py) in reachable and (px, py) not in solid_set and (px, py) not in occupied:
+            return px, py
+        w, h = self.config.MAP_WIDTH, self.config.MAP_HEIGHT
+        for r in range(1, 12):
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    nx, ny = px + dx, py + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        if (nx, ny) in reachable and (nx, ny) not in solid_set and (nx, ny) not in occupied:
+                            return nx, ny
+        # Last resort: pick any reachable tile.
+        for nx, ny in reachable:
+            if (nx, ny) not in solid_set and (nx, ny) not in occupied:
+                return nx, ny
+        return px, py
+
     def _ensure_entity_positions(self):
         """Clamp and adjust entity positions so they are playable."""
         def clamp_tile(tx, ty):
@@ -1705,31 +1764,48 @@ class GameEngine:
             ty = max(0, min(self.config.MAP_HEIGHT - 1, int(ty)))
             return tx, ty
 
+        # Ensure all critical entities are reachable from the player start.
+        ts = self.config.TILE_SIZE
+        start_tile = (int(self.player_x // ts), int(self.player_y // ts))
+        solid_set = getattr(self, "solid", set())
+        reachable = self._compute_reachable(solid_set, start_tile)
+        occupied: set[tuple[int, int]] = {start_tile}
+
         # NPC
         npc = self.game.get("npc", {})
         if npc:
             npc["x"], npc["y"] = clamp_tile(npc.get("x", 5), npc.get("y", 4))
             npc["x"], npc["y"] = self._find_open_tile(npc["x"], npc["y"])
+            npc["x"], npc["y"] = self._pick_free_reachable((npc["x"], npc["y"]), reachable, occupied, solid_set)
+            occupied.add((npc["x"], npc["y"]))
 
         # Items
         for item in self.items:
             item["x"], item["y"] = clamp_tile(item.get("x", 8), item.get("y", 6))
             item["x"], item["y"] = self._find_open_tile(item["x"], item["y"])
+            item["x"], item["y"] = self._pick_free_reachable((item["x"], item["y"]), reachable, occupied, solid_set)
+            occupied.add((item["x"], item["y"]))
 
         # Mix station
         if self.mix_station:
             self.mix_station["x"], self.mix_station["y"] = clamp_tile(self.mix_station.get("x", 9), self.mix_station.get("y", 5))
             self.mix_station["x"], self.mix_station["y"] = self._find_open_tile(self.mix_station["x"], self.mix_station["y"])
+            self.mix_station["x"], self.mix_station["y"] = self._pick_free_reachable((self.mix_station["x"], self.mix_station["y"]), reachable, occupied, solid_set)
+            occupied.add((self.mix_station["x"], self.mix_station["y"]))
 
         # Chest
         if self.chest:
             self.chest["x"], self.chest["y"] = clamp_tile(self.chest.get("x", 12), self.chest.get("y", 4))
             self.chest["x"], self.chest["y"] = self._find_open_tile(self.chest["x"], self.chest["y"])
+            self.chest["x"], self.chest["y"] = self._pick_free_reachable((self.chest["x"], self.chest["y"]), reachable, occupied, solid_set)
+            occupied.add((self.chest["x"], self.chest["y"]))
 
         # Door
         if self.door:
             self.door["x"], self.door["y"] = clamp_tile(self.door.get("x", 14), self.door.get("y", 6))
             self.door["x"], self.door["y"] = self._find_open_tile(self.door["x"], self.door["y"])
+            self.door["x"], self.door["y"] = self._pick_free_reachable((self.door["x"], self.door["y"]), reachable, occupied, solid_set)
+            occupied.add((self.door["x"], self.door["y"]))
 
     def _entity_bob(self, key: str, moving: bool = False):
         phase = self.entity_phase.get(key, 0.0)
@@ -2274,7 +2350,10 @@ class GameEngine:
         
         # Draw NPC
         npc = self.game["npc"]
-        npc_base = "npc_healed" if self.npc_healed and self.surfaces.get("npc_healed") else "npc"
+        if self.quest_type == "cure" and not self.npc_healed and self.surfaces.get("npc_sick"):
+            npc_base = "npc_sick"
+        else:
+            npc_base = "npc_healed" if self.npc_healed and self.surfaces.get("npc_healed") else "npc"
         ox, oy = self._entity_bob("npc")
         if self.scene == "outdoor":
             self._blit_sprite(npc_base, npc["x"], npc["y"], (ox, oy))
@@ -2406,6 +2485,26 @@ class GameEngine:
         y += 24
         self.screen.blit(self.font.render(f"{getattr(self, 'money', 0)}g", True, (255, 230, 120)), (x, y))
         y += 26
+
+        # Shop info (when indoors)
+        if getattr(self, "scene", "outdoor") == "indoor" and getattr(self, "current_building", None):
+            b = self.current_building
+            goods = b.get("goods") or []
+            if goods:
+                self.screen.blit(self.font_large.render(b.get("name", "Shop").upper(), True, (150, 255, 220)), (x, y))
+                y += 26
+                hint = "Press 1/2/3 to buy items."
+                if self.quest_type == "repair_bridge":
+                    hint = "Buy materials to repair the broken bridge. Press 1/2/3 to buy."
+                self.screen.blit(self.font.render(hint, True, (220, 220, 220)), (x, y))
+                y += 20
+                for i, g in enumerate(goods[:3]):
+                    self.screen.blit(
+                        self.font.render(f"{i+1}. {g['name']} ({g['price']}g)", True, (200, 200, 255)),
+                        (x, y),
+                    )
+                    y += 20
+                y += 6
         
         # Goal
         self.screen.blit(self.font_large.render("QUEST", True, (255, 150, 150)), (x, y))
@@ -2517,7 +2616,7 @@ HTML = '''
 <body>
     <div class="container">
         <h1>🎮 Game Generator v7</h1>
-        <p class="subtitle">Clean Pokemon-Style Graphics <span class="tag">NEW</span></p>
+        <p class="subtitle">Prompt‑Driven Adventure Generator <span class="tag">NEW</span></p>
         
         <div class="card">
             <label>🔑 OpenAI API Key</label>
@@ -2541,10 +2640,27 @@ HTML = '''
                 <span style="color:#888; font-size:12px;">(1-6)</span>
             </div>
             <div class="levels" style="margin-top:10px; display:block">
-                <label style="margin:0; color:#22d3ee;">Goals (optional)</label>
-                <input id="goalPlan" style="width:100%; margin-top:6px" placeholder="comma-separated e.g. cure,key_and_door,lost_item">
+                <label style="margin:0; color:#22d3ee;">Goal Pool (optional)</label>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px">
+                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                        <input type="checkbox" class="goalOpt" value="cure"> Cure (heal sick NPC)
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                        <input type="checkbox" class="goalOpt" value="key_and_door"> Key + Door
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                        <input type="checkbox" class="goalOpt" value="lost_item"> Lost Item
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                        <input type="checkbox" class="goalOpt" value="repair_bridge"> Repair Bridge (shop)
+                    </label>
+                </div>
                 <div style="color:#888; font-size:12px; margin-top:6px">
-                    Allowed: cure, key_and_door, lost_item, repair_bridge. Leave blank to auto-pick per level.
+                    If none selected: goals are auto-picked and varied across levels.
+                </div>
+                <div style="display:flex; gap:10px; margin-top:8px">
+                    <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Auto Goals</button>
+                    <button class="ex-btn" onclick="randomGoals()" style="background:#0b1220">🎲 Random Goals</button>
                 </div>
             </div>
         </div>
@@ -2589,12 +2705,35 @@ HTML = '''
             const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
             const prompt = `${pick(places)} ${pick(times)}. The hero is ${pick(heroes)}. The NPC is ${pick(npcs)}. The quest is to ${pick(hooks)}.`;
             document.getElementById('prompt').value = prompt;
+            // For random prompts, default to auto goal picking (varied per level).
+            clearGoals();
+        }
+
+        function selectedGoals() {
+            const els = document.querySelectorAll('.goalOpt');
+            const out = [];
+            els.forEach(e => { if (e.checked) out.push(e.value); });
+            return out;
+        }
+
+        function clearGoals() {
+            document.querySelectorAll('.goalOpt').forEach(e => { e.checked = false; });
+        }
+
+        function randomGoals() {
+            clearGoals();
+            const all = ['cure','key_and_door','lost_item','repair_bridge'];
+            // Pick 1-3 random goals for the pool.
+            const count = 1 + Math.floor(Math.random() * 3);
+            all.sort(() => Math.random() - 0.5);
+            const pick = new Set(all.slice(0, count));
+            document.querySelectorAll('.goalOpt').forEach(e => { e.checked = pick.has(e.value); });
         }
         async function generate() {
             const key = document.getElementById('apiKey').value;
             const prompt = document.getElementById('prompt').value;
             const levels = parseInt(document.getElementById('levels').value || '3', 10);
-            const goalPlan = (document.getElementById('goalPlan')?.value || '').trim();
+            const goalTypes = selectedGoals();
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
             document.getElementById('btn').disabled = true;
@@ -2604,7 +2743,7 @@ HTML = '''
             try {
                 const res = await fetch('/generate', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalPlan: goalPlan})
+                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalTypes: goalTypes})
                 });
                 const data = await res.json();
                 status.innerHTML = data.success ? '✅ Done! Go to terminal and press ENTER!' : '❌ ' + data.error;
@@ -2642,17 +2781,19 @@ def generate():
         level_count = max(1, min(6, level_count))
 
         # Pick quest types:
-        # - If the user provides a comma-separated goal plan (UI), follow it in order.
-        # - Otherwise, if the prompt implies a goal, use it for level 1.
-        # - Fill remaining levels by sampling allowed goal types, avoiding repeats until exhausted.
-        base_types = list(ALLOWED_GOALS)
-        goal_plan = parse_goal_plan(data.get("goalPlan"))
+        # - If the user selects a goal pool (checkboxes), only sample from that pool.
+        # - Otherwise, sample from all allowed goal types.
+        # - If the prompt implies a goal, use it for level 1 (only if it's in the pool).
+        # - Fill remaining levels by sampling goal types, avoiding repeats until exhausted.
+        selected = []
+        for raw in (data.get("goalTypes") or []):
+            gt = normalize_goal_type(raw)
+            if gt and gt not in selected:
+                selected.append(gt)
+        base_types = selected if selected else list(ALLOWED_GOALS)
         first = infer_goal_from_prompt(data.get("prompt", ""))
         quest_types: list[str] = []
-        for gt in goal_plan[:level_count]:
-            if gt in base_types:
-                quest_types.append(gt)
-        if not quest_types and first in base_types:
+        if first in base_types:
             quest_types.append(first)
         remaining = [t for t in base_types if t not in quest_types]
         while len(quest_types) < level_count:
