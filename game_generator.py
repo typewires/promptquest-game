@@ -51,6 +51,31 @@ class Config:
 ALLOWED_GOALS = ["cure", "key_and_door", "lost_item", "repair_bridge"]
 
 
+def normalize_goal_type(value: str | None) -> str | None:
+    """Return a canonical goal type or None."""
+    if not value:
+        return None
+    v = str(value).strip().lower()
+    if v in ALLOWED_GOALS:
+        return v
+    return None
+
+
+def parse_goal_plan(raw: str | None) -> list[str]:
+    """
+    Parse a comma-separated goal plan like: "cure,key_and_door,lost_item".
+    Unknown values are ignored.
+    """
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in str(raw).split(","):
+        gt = normalize_goal_type(part)
+        if gt:
+            out.append(gt)
+    return out
+
+
 def infer_goal_from_prompt(prompt: str) -> str | None:
     p = (prompt or "").lower()
     if any(k in p for k in ["heal", "cure", "sick", "remedy", "medicine"]):
@@ -2515,6 +2540,13 @@ HTML = '''
                 <input type="number" id="levels" min="1" max="6" value="3">
                 <span style="color:#888; font-size:12px;">(1-6)</span>
             </div>
+            <div class="levels" style="margin-top:10px; display:block">
+                <label style="margin:0; color:#22d3ee;">Goals (optional)</label>
+                <input id="goalPlan" style="width:100%; margin-top:6px" placeholder="comma-separated e.g. cure,key_and_door,lost_item">
+                <div style="color:#888; font-size:12px; margin-top:6px">
+                    Allowed: cure, key_and_door, lost_item, repair_bridge. Leave blank to auto-pick per level.
+                </div>
+            </div>
         </div>
         
         <button id="btn" onclick="generate()">🌟 Generate World!</button>
@@ -2562,6 +2594,7 @@ HTML = '''
             const key = document.getElementById('apiKey').value;
             const prompt = document.getElementById('prompt').value;
             const levels = parseInt(document.getElementById('levels').value || '3', 10);
+            const goalPlan = (document.getElementById('goalPlan')?.value || '').trim();
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
             document.getElementById('btn').disabled = true;
@@ -2571,7 +2604,7 @@ HTML = '''
             try {
                 const res = await fetch('/generate', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels})
+                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalPlan: goalPlan})
                 });
                 const data = await res.json();
                 status.innerHTML = data.success ? '✅ Done! Go to terminal and press ENTER!' : '❌ ' + data.error;
@@ -2608,11 +2641,18 @@ def generate():
         level_count = int(data.get("levels", 3))
         level_count = max(1, min(6, level_count))
 
-        # Pick quest types: if the user prompt implies a goal, use it for level 1.
+        # Pick quest types:
+        # - If the user provides a comma-separated goal plan (UI), follow it in order.
+        # - Otherwise, if the prompt implies a goal, use it for level 1.
+        # - Fill remaining levels by sampling allowed goal types, avoiding repeats until exhausted.
         base_types = list(ALLOWED_GOALS)
+        goal_plan = parse_goal_plan(data.get("goalPlan"))
         first = infer_goal_from_prompt(data.get("prompt", ""))
-        quest_types = []
-        if first in base_types:
+        quest_types: list[str] = []
+        for gt in goal_plan[:level_count]:
+            if gt in base_types:
+                quest_types.append(gt)
+        if not quest_types and first in base_types:
             quest_types.append(first)
         remaining = [t for t in base_types if t not in quest_types]
         while len(quest_types) < level_count:

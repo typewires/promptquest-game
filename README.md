@@ -50,7 +50,43 @@ Prompts primarily influence the **setting and vibe**:
 - Time of day (day/sunset/night)
 - Themed NPC + item flavor
 
-Quests are chosen from a **set of allowed goal types** to keep gameplay reliable; if you don’t specify a goal, the game picks one and varies it across levels.
+Quests are chosen from a **set of allowed goal types** to keep gameplay reliable:
+- The *type* of quest is selected by code from a small list (see “Goal Types” below).
+- The AI fills in the *flavor*: names, dialogue, item descriptions, and visual style.
+
+If you don’t specify goals, the game picks them and varies them across levels.
+
+## Goal Types (And Exactly How They’re Selected)
+
+**Allowed goal types** (hard-coded in `game_generator.py`):
+- `cure`
+- `key_and_door`
+- `lost_item`
+- `repair_bridge`
+
+### How goal selection works
+You have three ways to influence goals:
+
+1. **Explicit goals (all levels)** — optional UI field “Goals (optional)”
+   - Enter a comma-separated plan like:
+     - `cure,key_and_door,lost_item`
+   - The game uses them in order for Level 1..N (extra goals are ignored).
+   - If you provide fewer goals than levels, the remaining levels are filled automatically.
+
+2. **Implicit goal (Level 1 only)** — inferred from your prompt text
+   - If your prompt contains keywords like “sick / cure / heal”, Level 1 becomes `cure`.
+   - If your prompt contains “key / door / unlock”, Level 1 becomes `key_and_door`.
+   - If your prompt contains “lost / missing / stolen”, Level 1 becomes `lost_item`.
+   - If your prompt contains “bridge / repair”, Level 1 becomes `repair_bridge`.
+
+3. **No goal specified** — fully automatic
+   - The game samples goals from the allowed list.
+   - It avoids repeats **until the pool is exhausted**, then repeats are allowed.
+
+### Are later levels AI-generated goals?
+Later levels are **not free-form “invented” by the AI**. Instead:
+- Code selects a goal type for each level (using the rules above).
+- The AI generates the level’s **content** consistent with that selected goal type (NPC flavor, items, dialogue, look).
 
 ## Quest Types (Examples)
 Each level picks one quest type (varied across the run):
@@ -59,11 +95,65 @@ Each level picks one quest type (varied across the run):
 - `lost_item`: Search the map for a missing item and return it.
 - `repair_bridge`: Visit a shop, buy materials (planks/rope/nails) with in‑game money, then repair a broken bridge to reach the objective.
 
+## How To Complete Each Goal
+
+### `cure` (Heal a Sick NPC)
+What you’ll see:
+- An NPC appears on the map in a “sick” state.
+- A few ingredient items appear (collectibles).
+- A mixing station appears (interactive).
+
+How to finish:
+1. Talk to the NPC (`SPACE`) to learn what’s wrong and what you need.
+2. Collect the ingredients by walking over them / interacting (`SPACE`).
+3. Use the mixing station (`SPACE`) once you have ingredients.
+4. Return to the sick NPC and interact (`SPACE`) to heal them.
+5. The NPC sprite swaps to a “healed” version and the quest completes.
+
+### `key_and_door` (Chest → Key → Door)
+What you’ll see:
+- A closed chest, a locked door, and often a short hint from the NPC.
+
+How to finish:
+1. Find and open the chest (`SPACE`).
+2. Pick up the key that appears.
+3. Go to the door and unlock it (`SPACE`) to finish the level objective.
+
+### `lost_item` (Find and Return)
+What you’ll see:
+- An NPC missing something.
+- A “lost” item somewhere on the map.
+
+How to finish:
+1. Talk to the NPC (`SPACE`) to learn what’s missing.
+2. Search the map for the item, then pick it up.
+3. Return to the NPC and interact to complete the quest.
+
+### `repair_bridge` (Shop → Buy Materials → Repair)
+What you’ll see:
+- A broken bridge area that blocks traversal.
+- An enterable shop selling materials (planks/rope/nails).
+
+How to finish:
+1. Enter the shop and buy needed materials (see “Shops + Money” below).
+2. Leave the shop and go to the broken bridge.
+3. Interact at the bridge (`SPACE`) to repair it (if you have materials).
+4. Cross the bridge and finish the level objective.
+
 ## Shops + Money
 Some levels include enterable buildings (e.g., a shop/inn).
 - Your money is shown in the UI.
 - In a shop, press `SPACE` to talk to the shopkeeper and see buy instructions.
 - Press `1`/`2`/`3` to buy items; the UI updates your remaining money and inventory.
+
+### Entering and leaving buildings
+- Approach a building’s **door** from outside.
+- Press `SPACE` to enter.
+- Inside, press `SPACE` near the door to exit back to the same outdoor map.
+
+### How buying ties into goals
+- `repair_bridge` uses the shop to sell required materials.
+- Other goal types may still spawn shops (for flavor and future expansion), but `repair_bridge` is the one that currently depends on buying items.
 
 ## Repo Layout
 - `game_generator.py`: everything (Flask UI + generator + Pygame engine)
@@ -83,6 +173,10 @@ Use the virtualenv steps above (`python3 -m venv .venv` then install inside it).
 ### Browser shows a blank page
 Make sure you’re visiting **HTTP**, not HTTPS:
 - Use `http://127.0.0.1:5000` (not `https://...`).
+
+### “Bad Request” in the terminal when you open the page
+If you see `Bad request version` logs, it usually means your browser (or an extension) tried to speak **HTTPS** to the local **HTTP** server.
+Use `http://127.0.0.1:5000` explicitly.
 
 ### Image generation errors (500s / 400s)
 If the image API fails, the game may fall back to simple placeholder sprites. Re-run generation or try again later.
