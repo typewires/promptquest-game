@@ -169,6 +169,34 @@ Sprite images are cached on disk so reruns can be much cheaper.
 
 Note: `generated_sprites/` is ignored by git by default (it’s a local cache).
 
+## Pre-Generating Core Sprites (Ship With GitHub)
+If you want to keep costs low for users, you can “bake” a set of core sprites once at **High** quality and commit them to the repo.
+
+What gets baked (recommended):
+- Shopkeeper + Innkeeper NPC sprites (`npc_shop`, `npc_inn`)
+- Core props: `chest`, `key`, `door`, `mix_station`
+- Bridge material icons: `mat_planks`, `mat_rope`, `mat_nails`
+- A generic item icon used when item-sprite budget is low: `item_generic`
+
+### Bake command
+From the repo root:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+python game_generator.py --bake-core --quality high
+```
+
+This writes PNGs to `assets/sprites/` and a `assets/sprites/manifest.json`.
+
+### Commit and push baked sprites
+```bash
+git add assets/sprites
+git commit -m "Add baked core sprites"
+git push
+```
+
+When `assets/sprites/` contains baked sprites, the game will automatically load and reuse them instead of calling image generation for those keys.
+
 ## Quest Types (Examples)
 Each level picks one quest type (varied across the run):
 - `cure`: Collect ingredients, mix a remedy, heal a sick NPC (NPC starts with a “sick” sprite and swaps to a “healed” sprite on completion).

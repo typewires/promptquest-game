@@ -15,6 +15,7 @@ import time
 import random
 import math
 import hashlib
+import sys
 from io import BytesIO
 from flask import Flask, render_template_string, request, jsonify
 import requests
@@ -36,6 +37,8 @@ class Config:
     TEXT_MODEL = "gpt-4o-mini"
     IMAGE_MODEL = "gpt-image-1"
     IMAGE_QUALITY = "medium"  # high | medium | low
+    # How many quest item sprites to generate per level (others use a generic icon).
+    ITEM_SPRITES_PER_LEVEL = 1
     IMAGE_MAX_RETRIES = 4
     IMAGE_RETRY_BASE_DELAY = 1.5
     DEBUG_SPRITES = True
@@ -53,6 +56,34 @@ class Config:
 
 
 ALLOWED_GOALS = ["cure", "key_and_door", "lost_item", "repair_bridge"]
+
+BAKED_SPRITES_DIR = os.path.join("assets", "sprites")
+BAKED_MANIFEST_PATH = os.path.join(BAKED_SPRITES_DIR, "manifest.json")
+
+
+def _load_baked_manifest() -> dict:
+    try:
+        with open(BAKED_MANIFEST_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _load_baked_sprite(key: str) -> Image.Image | None:
+    """
+    Load a baked sprite image from assets/sprites/ if present.
+    Returns a PIL Image in RGBA or None.
+    """
+    manifest = _load_baked_manifest()
+    fname = manifest.get(key, f"{key}.png")
+    path = os.path.join(BAKED_SPRITES_DIR, fname)
+    if not os.path.exists(path):
+        return None
+    try:
+        return Image.open(path).convert("RGBA")
+    except Exception:
+        return None
 
 
 def parse_level_goal_overrides(prompt: str) -> dict[int, str]:
@@ -1239,29 +1270,52 @@ class SpriteGenerator:
         reuse_inn = game.get("_reuse_sprites", {}).get("npc_inn")
 
         print("  npc_shop...")
-        sprites["npc_shop"] = reuse_shop if reuse_shop is not None else self._gen(
-            "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
-            role="npc",
-            theme=theme
+        baked_shop = _load_baked_sprite("npc_shop")
+        sprites["npc_shop"] = (
+            baked_shop
+            if baked_shop is not None
+            else (reuse_shop if reuse_shop is not None else self._gen(
+                "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
+                role="npc",
+                theme=theme
+            ))
         )
         time.sleep(self.delay)
 
         print("  npc_inn...")
-        sprites["npc_inn"] = reuse_inn if reuse_inn is not None else self._gen(
-            "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
-            role="npc",
-            theme=theme
+        baked_inn = _load_baked_sprite("npc_inn")
+        sprites["npc_inn"] = (
+            baked_inn
+            if baked_inn is not None
+            else (reuse_inn if reuse_inn is not None else self._gen(
+                "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
+                role="npc",
+                theme=theme
+            ))
         )
         time.sleep(self.delay)
         
+        # Quest items: generate up to N sprites based on Config.ITEM_SPRITES_PER_LEVEL.
+        # Remaining items use a baked generic icon (if provided) or reuse the first generated sprite.
+        baked_generic = _load_baked_sprite("item_generic")
         if items:
-            print("  Item...")
-            sprites["item"] = self._gen(items[0]["sprite_desc"], role="item", theme=theme)
-            time.sleep(self.delay)
-        if len(items) > 1:
-            print("  Second item...")
-            sprites["item2"] = self._gen(items[1]["sprite_desc"], role="item", theme=theme)
-            time.sleep(self.delay)
+            if Config.ITEM_SPRITES_PER_LEVEL >= 1:
+                print("  Item...")
+                sprites["item"] = self._gen(items[0]["sprite_desc"], role="item", theme=theme)
+                time.sleep(self.delay)
+            else:
+                sprites["item"] = baked_generic if baked_generic is not None else self._gen("simple collectible item icon", role="item", theme=theme)
+            if len(items) > 1:
+                if Config.ITEM_SPRITES_PER_LEVEL >= 2:
+                    print("  Second item...")
+                    sprites["item2"] = self._gen(items[1]["sprite_desc"], role="item", theme=theme)
+                    time.sleep(self.delay)
+                else:
+                    sprites["item2"] = baked_generic if baked_generic is not None else sprites.get("item")
+        else:
+            # Provide a default icon for indoor shelf displays.
+            sprites["item"] = baked_generic if baked_generic is not None else self._gen("simple collectible item icon", role="item", theme=theme)
+            sprites["item2"] = sprites["item"]
         # Reuse additional items by mirroring existing sprites (visual variety comes from placement).
         # This caps image calls while keeping gameplay intact.
 
@@ -1278,7 +1332,8 @@ class SpriteGenerator:
 
             print("  Mix station...")
             mix = quest.get("mix_station", {})
-            sprites["mix_station"] = self._gen(mix.get("sprite_desc", "small potion cauldron"), role="cauldron", theme=theme)
+            baked_mix = _load_baked_sprite("mix_station")
+            sprites["mix_station"] = baked_mix if baked_mix is not None else self._gen(mix.get("sprite_desc", "small potion cauldron"), role="cauldron", theme=theme)
             time.sleep(self.delay)
 
             print("  Healed NPC...")
@@ -1288,17 +1343,20 @@ class SpriteGenerator:
         if quest.get("type") == "key_and_door":
             print("  Chest...")
             chest = quest.get("chest", {})
-            sprites["chest"] = self._gen(chest.get("sprite_desc", "old wooden chest"), role="chest", theme=theme)
+            baked_chest = _load_baked_sprite("chest")
+            sprites["chest"] = baked_chest if baked_chest is not None else self._gen(chest.get("sprite_desc", "old wooden chest"), role="chest", theme=theme)
             time.sleep(self.delay)
 
             print("  Key...")
             key = quest.get("key", {})
-            sprites["key"] = self._gen(key.get("sprite_desc", "old brass key"), role="key", theme=theme)
+            baked_key = _load_baked_sprite("key")
+            sprites["key"] = baked_key if baked_key is not None else self._gen(key.get("sprite_desc", "old brass key"), role="key", theme=theme)
             time.sleep(self.delay)
 
             print("  Door...")
             door = quest.get("door", {})
-            sprites["door"] = self._gen(door.get("sprite_desc", "stone door"), role="door", theme=theme)
+            baked_door = _load_baked_sprite("door")
+            sprites["door"] = baked_door if baked_door is not None else self._gen(door.get("sprite_desc", "stone door"), role="door", theme=theme)
             time.sleep(self.delay)
 
         # Repair materials (used by the shop UI + visuals)
@@ -1306,15 +1364,18 @@ class SpriteGenerator:
             mats = {it.get("id"): it for it in (quest.get("items") or [])}
             if "planks" in mats:
                 print("  Planks...")
-                sprites["mat_planks"] = self._gen(mats["planks"].get("sprite_desc", "stack of wooden planks tied with rope"), role="item", theme=theme)
+                baked_planks = _load_baked_sprite("mat_planks")
+                sprites["mat_planks"] = baked_planks if baked_planks is not None else self._gen(mats["planks"].get("sprite_desc", "stack of wooden planks tied with rope"), role="item", theme=theme)
                 time.sleep(self.delay)
             if "rope" in mats:
                 print("  Rope...")
-                sprites["mat_rope"] = self._gen(mats["rope"].get("sprite_desc", "coiled rope with a knot, tan color"), role="item", theme=theme)
+                baked_rope = _load_baked_sprite("mat_rope")
+                sprites["mat_rope"] = baked_rope if baked_rope is not None else self._gen(mats["rope"].get("sprite_desc", "coiled rope with a knot, tan color"), role="item", theme=theme)
                 time.sleep(self.delay)
             if "nails" in mats:
                 print("  Nails...")
-                sprites["mat_nails"] = self._gen(mats["nails"].get("sprite_desc", "small pouch of iron nails with a few nails visible"), role="item", theme=theme)
+                baked_nails = _load_baked_sprite("mat_nails")
+                sprites["mat_nails"] = baked_nails if baked_nails is not None else self._gen(mats["nails"].get("sprite_desc", "small pouch of iron nails with a few nails visible"), role="item", theme=theme)
                 time.sleep(self.delay)
         
         total_calls = len(sprites)
@@ -3546,6 +3607,11 @@ def generate():
         # - low/medium: cheaper model
         # - high: higher quality, higher cost
         Config.TEXT_MODEL = "gpt-4o-mini" if q in ["low", "medium"] else "gpt-4o"
+        # Item sprite generation budget by quality.
+        # - low: no per-quest item sprites (uses a generic icon)
+        # - medium: generate 1 item sprite per level
+        # - high: generate 2 item sprites per level
+        Config.ITEM_SPRITES_PER_LEVEL = 0 if q == "low" else (2 if q == "high" else 1)
         
         client = OpenAIClient(config.OPENAI_API_KEY)
         
@@ -3647,6 +3713,60 @@ def main():
     import webbrowser
     import threading
     
+    # Bake core sprites and exit (used to commit high-quality sprites into the repo).
+    if "--bake-core" in sys.argv:
+        # Optional: --quality high|medium|low
+        q = "high"
+        if "--quality" in sys.argv:
+            try:
+                q = sys.argv[sys.argv.index("--quality") + 1]
+            except Exception:
+                q = "high"
+        q = str(q).lower().strip()
+        if q not in ["low", "medium", "high"]:
+            q = "high"
+        Config.IMAGE_QUALITY = q
+        # Use a higher quality text model for bake-time prompts (not many calls here anyway).
+        Config.TEXT_MODEL = "gpt-4o"
+
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY".lower())
+        if not api_key:
+            api_key = input("OPENAI_API_KEY (will not be saved): ").strip()
+        if not api_key:
+            raise SystemExit("Missing OPENAI_API_KEY.")
+
+        client = OpenAIClient(api_key)
+        os.makedirs(BAKED_SPRITES_DIR, exist_ok=True)
+        manifest: dict[str, str] = {}
+
+        core = [
+            ("npc_shop", "npc", "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood"),
+            ("npc_inn", "npc", "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe"),
+            ("chest", "chest", "treasure chest prop: wooden chest with metal bands and latch"),
+            ("key", "key", "key item: ornate brass key with visible teeth and keyring hole"),
+            ("door", "door", "door prop: heavy wooden door with iron bands and visible lock and handle"),
+            ("mix_station", "cauldron", "alchemy prop: iron cauldron with glowing liquid, bubbles, small runes"),
+            ("mat_planks", "item", "stack of sturdy wooden bridge planks, slightly weathered, strapped with twine"),
+            ("mat_rope", "item", "thick coil of hemp rope with a knot, tan color, rugged fibers"),
+            ("mat_nails", "item", "small pouch of iron nails with a few nails visible, dark metal sheen"),
+            ("item_generic", "item", "simple collectible item icon: small pouch or trinket with clear silhouette"),
+        ]
+
+        print(f"Baking core sprites to {BAKED_SPRITES_DIR} (quality={Config.IMAGE_QUALITY})...")
+        for key, role, desc in core:
+            img = client.generate_image(desc, role=role, theme="fantasy pixel adventure")
+            out_name = f"{key}.png"
+            out_path = os.path.join(BAKED_SPRITES_DIR, out_name)
+            img.save(out_path)
+            manifest[key] = out_name
+            print(f"  wrote {out_path}")
+
+        with open(BAKED_MANIFEST_PATH, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+        print(f"Wrote {BAKED_MANIFEST_PATH}")
+        print("Done. Commit and push assets/sprites/ to GitHub to share baked sprites.")
+        return
+
     print("""
     ╔═══════════════════════════════════════════════════════════════╗
     ║          🎮 PromptQuest: AI Pixel Adventure 🎮                ║
