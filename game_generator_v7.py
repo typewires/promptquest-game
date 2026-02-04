@@ -1,0 +1,2719 @@
+"""
+GENIE GAME GENERATOR v7 - Clean Pokemon Style!
+===============================================
+- Varied quest types generated per world (cure, key+door, lost item)
+- Animated characters + environment (bobbing, water shimmer, swaying)
+- Code-drawn terrain with tile-like feel
+- Fewer flashy effects during daytime
+- Peaceful exploration, no combat
+"""
+
+import os
+import json
+import base64
+import time
+import random
+import math
+from io import BytesIO
+from flask import Flask, render_template_string, request, jsonify
+import requests
+import pygame
+from PIL import Image
+
+# Track quest variety across generations
+LAST_QUEST_TYPE = None
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+class Config:
+    OPENAI_API_KEY = ""
+    TEXT_MODEL = "gpt-4o"
+    IMAGE_MODEL = "gpt-image-1"
+    IMAGE_MAX_RETRIES = 4
+    IMAGE_RETRY_BASE_DELAY = 1.5
+    DEBUG_SPRITES = True
+    
+    TILE_SIZE = 72
+    GAME_WIDTH = 1400
+    GAME_HEIGHT = 900
+    MAP_WIDTH = 16
+    MAP_HEIGHT = 12
+    PLAYER_SPEED = 4
+    API_DELAY = 1.2
+    ANIM_SPEED = 0.08
+    IDLE_BOB = 0
+    WALK_BOB = 0
+
+
+ALLOWED_GOALS = ["cure", "key_and_door", "lost_item", "repair_bridge"]
+
+
+def infer_goal_from_prompt(prompt: str) -> str | None:
+    p = (prompt or "").lower()
+    if any(k in p for k in ["heal", "cure", "sick", "remedy", "medicine"]):
+        return "cure"
+    if any(k in p for k in ["unlock", "key", "door", "gate", "sealed"]):
+        return "key_and_door"
+    if any(k in p for k in ["lost", "missing", "heirloom", "stolen", "memento"]):
+        return "lost_item"
+    if any(k in p for k in ["bridge", "repair", "fix", "planks", "rope", "nails"]):
+        return "repair_bridge"
+    return None
+
+
+# ============================================================
+# PARTICLE EFFECTS
+# ============================================================
+
+class Particle:
+    def __init__(self, x, y, color, vx=0, vy=0, life=30, size=4, gravity=0):
+        self.x, self.y = x, y
+        self.color = color
+        self.vx = vx + random.uniform(-1, 1)
+        self.vy = vy + random.uniform(-1, 1)
+        self.life = life
+        self.max_life = life
+        self.size = size
+        self.gravity = gravity
+    
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += self.gravity
+        self.life -= 1
+        return self.life > 0
+    
+    def draw(self, screen):
+        size = max(1, int(self.size * (self.life / self.max_life)))
+        pygame.draw.circle(screen, self.color, (int(self.x), int(self.y)), size)
+
+
+class EffectsManager:
+    def __init__(self, allow_flash: bool = True):
+        self.particles = []
+        self.flash = 0
+        self.flash_color = (255, 255, 255)
+        self.allow_flash = allow_flash
+    
+    def update(self):
+        self.particles = [p for p in self.particles if p.update()]
+        if self.flash > 0:
+            self.flash -= 1
+    
+    def draw(self, screen):
+        for p in self.particles:
+            p.draw(screen)
+        if self.flash > 0:
+            s = pygame.Surface(screen.get_size())
+            s.fill(self.flash_color)
+            s.set_alpha(int(40 * (self.flash / 10)))
+            screen.blit(s, (0, 0))
+    
+    def sparkle(self, x, y):
+        colors = [(255, 255, 100), (100, 200, 255), (255, 100, 255), (255, 255, 255)]
+        for _ in range(20):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(1, 4)
+            self.particles.append(Particle(
+                x, y, random.choice(colors),
+                math.cos(angle) * speed, math.sin(angle) * speed - 2,
+                random.randint(25, 45), random.randint(3, 6), -0.05
+            ))
+        if self.allow_flash:
+            self.flash = 6
+            self.flash_color = (255, 255, 200)
+    
+    def pickup(self, x, y):
+        for _ in range(15):
+            angle = random.uniform(0, 2 * math.pi)
+            self.particles.append(Particle(
+                x, y, (255, 230, 100),
+                math.cos(angle) * 3, math.sin(angle) * 3 - 1,
+                20, 5, -0.1
+            ))
+        if self.allow_flash:
+            self.flash = 4
+            self.flash_color = (255, 255, 150)
+    
+    def complete(self, x, y):
+        colors = [(100, 255, 100), (200, 255, 200), (150, 255, 150)]
+        for _ in range(25):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(2, 5)
+            self.particles.append(Particle(
+                x, y, random.choice(colors),
+                math.cos(angle) * speed, math.sin(angle) * speed,
+                random.randint(30, 50), random.randint(4, 7), 0
+            ))
+        if self.allow_flash:
+            self.flash = 8
+            self.flash_color = (150, 255, 150)
+
+    def smoke(self, x, y, color=(120, 255, 140)):
+        for _ in range(25):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(0.5, 2.5)
+            self.particles.append(Particle(
+                x, y, color,
+                math.cos(angle) * speed, math.sin(angle) * speed - 1.5,
+                random.randint(25, 45), random.randint(4, 7), -0.03
+            ))
+
+
+# ============================================================
+# OPENAI CLIENT
+# ============================================================
+
+class OpenAIClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        self.last_image_was_fallback = False
+        self.last_image_error = None
+    
+    def generate_text(self, prompt: str) -> str:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=self.headers,
+            json={
+                "model": Config.TEXT_MODEL,
+                "messages": [
+                    {"role": "system", "content": "You are a game designer. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 2500,
+                "temperature": 0.6
+            }
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    
+    def generate_image(self, prompt: str, role: str = "sprite", theme: str = "") -> Image.Image:
+        """Generate a character/item sprite"""
+        self.last_image_was_fallback = False
+        self.last_image_error = None
+        role_hint = {
+            "player": "playable hero",
+            "npc": "NPC character",
+            "npc_healed": "NPC character (healed/happy)",
+            "item": "collectible item",
+            "key": "key item",
+            "chest": "treasure chest prop",
+            "door": "door prop",
+            "cauldron": "alchemy cauldron prop",
+            "prop": "interactive prop",
+        }.get(role, "sprite")
+
+        # Role-specific quality prompts to prevent vague blobs
+        if role in ["player", "npc", "npc_healed"]:
+            subject = f"{prompt}. Full-body single character. Clear face, hair, hands, boots. Distinct silhouette. {role_hint}."
+        elif role == "key":
+            subject = f"{prompt}. Single ornate brass key with visible teeth and keyring hole. Crisp outline. {role_hint}."
+        elif role == "chest":
+            subject = f"{prompt}. Single wooden treasure chest with metal bands and latch. 3/4 top-down view. {role_hint}."
+        elif role == "door":
+            subject = f"{prompt}. Single wooden door or stone arch door with clear handle/lock. 3/4 top-down view. {role_hint}."
+        elif role == "cauldron":
+            subject = f"{prompt}. Single iron cauldron with glowing liquid and small details (runes, bubbles). 3/4 top-down view. {role_hint}."
+        elif role == "item":
+            subject = f"{prompt}. Single item only. Clean outline. Clear shape and material. {role_hint}."
+        else:
+            subject = f"{prompt}. Single prop only. Clean outline. Clear function. {role_hint}."
+
+        styled_prompt = f"""Create a single video game {role} sprite in high-quality 32-bit pixel art style.
+Style goals: clean outlines, readable silhouette, rich shading, cozy lighting, classic JRPG overworld look.
+Reference: 32-bit RPG character style (crisp pixels, higher color depth, detailed clothing).
+Avoid generic or blocky shapes. Use 8-16 distinct colors with strong contrast; do NOT be monochrome.
+If character: include face, hair, layered clothing, and at least one accessory or motif that fits the theme.
+If item/prop: make it unique, colorful, and readable at 128x128.
+IMPORTANT: output a SINGLE character or item only. Do NOT include multiple poses, sprite sheets, or multiple characters.
+Do NOT show multiple people in the image.
+No watermark, no UI, no text, no logos.
+No Minecraft/blocky style. No simple rectangles. No stick figures.
+The sprite should be on a plain solid GREEN background (#00FF00 bright green for chroma key).
+3/4 top-down or slight isometric view, centered in frame, full body visible.
+Character should fill most of the frame (75-90% height), not tiny.
+Sharp pixels, no blur.
+
+Theme: {theme}
+Subject: {subject}"""
+        
+        last_err = None
+        for attempt in range(Config.IMAGE_MAX_RETRIES):
+            extra = ""
+            if attempt >= 1:
+                extra = "\nSTRICT: exactly ONE subject only, centered. No duplicates. No second character."
+            if attempt >= 2:
+                extra += "\nSTRICT: close-up single subject. Fill the frame. Do not include background props."
+
+            try:
+                response = requests.post(
+                    "https://api.openai.com/v1/images/generations",
+                    headers=self.headers,
+                    json={
+                        "model": Config.IMAGE_MODEL,
+                        "prompt": styled_prompt + extra,
+                        "n": 1,
+                        "size": "1024x1024",
+                        "quality": "high",
+                    }
+                )
+                response.raise_for_status()
+                payload = response.json()
+                data0 = payload.get("data", [{}])[0] if isinstance(payload.get("data"), list) else {}
+                image_data = data0.get("b64_json")
+                if not image_data and data0.get("url"):
+                    # Some image models/endpoints may return a URL; we do not support downloading in this app.
+                    raise RuntimeError("Image API returned a URL; expected base64. Try a GPT image model or update API settings.")
+                if not image_data:
+                    raise RuntimeError(f"Image API did not return b64_json (keys={list(data0.keys())})")
+                img = Image.open(BytesIO(base64.b64decode(image_data)))
+
+                # Resize and try to remove green background
+                img = img.resize((128, 128), Image.NEAREST)
+                img = self._remove_green_bg(img)
+
+                areas = self._component_areas(img)
+                img = self._crop_to_largest_component(img)
+                img = self._extract_largest_sprite(img)
+                img = self._fit_to_square(img, 128)
+
+                # If it likely contained multiple large subjects, retry with stricter prompt.
+                if len(areas) >= 2 and areas[1] > 0.45 * areas[0]:
+                    last_err = f"multi-subject output (areas={areas[:3]})"
+                    continue
+                # If it still looks like a strip/spritesheet after cropping, retry
+                if img.width > int(img.height * 1.25):
+                    last_err = "spritesheet-like aspect ratio"
+                    continue
+                if self._nontransparent_pixels(img) < 350:
+                    last_err = "too little sprite content"
+                    continue
+                if Config.DEBUG_SPRITES:
+                    try:
+                        os.makedirs("generated_sprites", exist_ok=True)
+                        ts = int(time.time() * 1000)
+                        img.save(os.path.join("generated_sprites", f"{ts}_{role}.png"))
+                    except Exception:
+                        pass
+                return img
+            except requests.exceptions.HTTPError as e:
+                last_err = str(e)
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                try:
+                    if getattr(e, "response", None) is not None and e.response.text:
+                        last_err = f"{last_err} | {e.response.text[:240]}"
+                except Exception:
+                    pass
+                # Backoff for transient server errors
+                if status and status >= 500:
+                    delay = Config.IMAGE_RETRY_BASE_DELAY * (attempt + 1)
+                    time.sleep(delay)
+                    continue
+                break
+            except Exception as e:
+                last_err = str(e)
+                delay = Config.IMAGE_RETRY_BASE_DELAY * (attempt + 1)
+                time.sleep(delay)
+                continue
+
+        print(f"Image fallback for role={role}: {last_err}")
+        self.last_image_was_fallback = True
+        self.last_image_error = last_err
+        return self._placeholder(prompt, role)
+    
+    def _remove_green_bg(self, img: Image.Image) -> Image.Image:
+        """Remove bright green background"""
+        img = img.convert("RGBA")
+        pixels = img.load()
+        for y in range(img.height):
+            for x in range(img.width):
+                r, g, b, a = pixels[x, y]
+                # Remove bright greens (chroma key)
+                if g > 200 and r < 160 and b < 160:
+                    pixels[x, y] = (0, 0, 0, 0)
+                # Remove near-exact #00FF00 and green spill
+                elif r < 80 and g > 200 and b < 80:
+                    pixels[x, y] = (0, 0, 0, 0)
+                elif g > r + 110 and g > b + 110 and g > 170:
+                    pixels[x, y] = (0, 0, 0, 0)
+                # Also remove near-white/gray backgrounds
+                elif r > 240 and g > 240 and b > 240:
+                    pixels[x, y] = (0, 0, 0, 0)
+                # Remove checkered pattern (common DALL-E artifact)
+                elif abs(r - g) < 10 and abs(g - b) < 10 and r > 180:
+                    pixels[x, y] = (0, 0, 0, 0)
+        return img
+
+    def _fit_to_square(self, img: Image.Image, size: int = 128, pad: int = 4) -> Image.Image:
+        """Crop to non-transparent pixels and scale to fill the square."""
+        img = img.convert("RGBA")
+        pixels = img.load()
+        min_x, min_y = img.width, img.height
+        max_x, max_y = 0, 0
+        found = False
+        for y in range(img.height):
+            for x in range(img.width):
+                if pixels[x, y][3] > 0:
+                    found = True
+                    min_x = min(min_x, x)
+                    min_y = min(min_y, y)
+                    max_x = max(max_x, x)
+                    max_y = max(max_y, y)
+        if not found:
+            return img
+
+        crop = img.crop((min_x, min_y, max_x + 1, max_y + 1))
+        target = max(1, size - pad * 2)
+        scale = min(target / crop.width, target / crop.height)
+        new_w = max(1, int(crop.width * scale))
+        new_h = max(1, int(crop.height * scale))
+        resized = crop.resize((new_w, new_h), Image.NEAREST)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        ox = (size - new_w) // 2
+        oy = (size - new_h) // 2
+        canvas.paste(resized, (ox, oy), resized)
+        return canvas
+
+    def _crop_to_largest_component(self, img: Image.Image) -> Image.Image:
+        """Crop to the largest connected non-transparent component (helps avoid multi-character outputs)."""
+        img = img.convert("RGBA")
+        w, h = img.size
+        px = img.load()
+        visited = [[False] * w for _ in range(h)]
+
+        def neighbors(x, y):
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    yield nx, ny
+
+        best_area = 0
+        best_bbox = None
+
+        for y in range(h):
+            for x in range(w):
+                if visited[y][x]:
+                    continue
+                if px[x, y][3] == 0:
+                    continue
+                # BFS/DFS
+                stack = [(x, y)]
+                visited[y][x] = True
+                min_x, min_y = x, y
+                max_x, max_y = x, y
+                area = 0
+                while stack:
+                    cx, cy = stack.pop()
+                    area += 1
+                    min_x = min(min_x, cx)
+                    min_y = min(min_y, cy)
+                    max_x = max(max_x, cx)
+                    max_y = max(max_y, cy)
+                    for nx, ny in neighbors(cx, cy):
+                        if not visited[ny][nx] and px[nx, ny][3] > 0:
+                            visited[ny][nx] = True
+                            stack.append((nx, ny))
+                if area > best_area:
+                    best_area = area
+                    best_bbox = (min_x, min_y, max_x + 1, max_y + 1)
+
+        if best_bbox and best_area > 30:
+            return img.crop(best_bbox)
+        return img
+
+    def _component_areas(self, img: Image.Image) -> list:
+        """Return connected-component areas for alpha>0 pixels."""
+        img = img.convert("RGBA")
+        w, h = img.size
+        px = img.load()
+        visited = [[False] * w for _ in range(h)]
+        areas = []
+
+        def neighbors(x, y):
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    yield nx, ny
+
+        for y in range(h):
+            for x in range(w):
+                if visited[y][x] or px[x, y][3] == 0:
+                    continue
+                stack = [(x, y)]
+                visited[y][x] = True
+                area = 0
+                while stack:
+                    cx, cy = stack.pop()
+                    area += 1
+                    for nx, ny in neighbors(cx, cy):
+                        if not visited[ny][nx] and px[nx, ny][3] > 0:
+                            visited[ny][nx] = True
+                            stack.append((nx, ny))
+                areas.append(area)
+        areas.sort(reverse=True)
+        return areas
+
+    def _extract_largest_sprite(self, img: Image.Image) -> Image.Image:
+        """Heuristic: if image looks like a sprite sheet, crop the densest column."""
+        img = img.convert("RGBA")
+        pixels = img.load()
+        min_x, min_y = img.width, img.height
+        max_x, max_y = 0, 0
+        found = False
+        for y in range(img.height):
+            for x in range(img.width):
+                if pixels[x, y][3] > 0:
+                    found = True
+                    min_x = min(min_x, x)
+                    min_y = min(min_y, y)
+                    max_x = max(max_x, x)
+                    max_y = max(max_y, y)
+        if not found:
+            return img
+        w = max_x - min_x + 1
+        h = max_y - min_y + 1
+        if w <= h * 1.2:
+            return img
+
+        # Sprite sheet likely: split into 3 or 4 columns and pick densest
+        columns = 3 if w / h < 3.5 else 4
+        best = None
+        best_count = -1
+        for i in range(columns):
+            x0 = int(min_x + i * w / columns)
+            x1 = int(min_x + (i + 1) * w / columns)
+            count = 0
+            for y in range(min_y, max_y + 1):
+                for x in range(x0, x1):
+                    if pixels[x, y][3] > 0:
+                        count += 1
+            if count > best_count:
+                best_count = count
+                best = (x0, min_y, x1, max_y + 1)
+        if best:
+            return img.crop(best)
+        return img
+
+    def _nontransparent_pixels(self, img: Image.Image) -> int:
+        img = img.convert("RGBA")
+        pixels = img.load()
+        count = 0
+        for y in range(img.height):
+            for x in range(img.width):
+                if pixels[x, y][3] > 0:
+                    count += 1
+        return count
+
+    def _placeholder(self, prompt: str, role: str = "sprite") -> Image.Image:
+        """Fallback pixel sprite with multiple colors (no purple blocks)."""
+        p = prompt.lower()
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        px = img.load()
+
+        def draw_rect(x0, y0, x1, y1, color):
+            for y in range(y0, y1 + 1):
+                for x in range(x0, x1 + 1):
+                    px[x, y] = color
+
+        def outline():
+            img_copy = img.copy()
+            p2 = img_copy.load()
+            for y in range(64):
+                for x in range(64):
+                    if px[x, y][3] > 0:
+                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 64 and 0 <= ny < 64 and px[nx, ny][3] == 0:
+                                p2[nx, ny] = (25, 25, 35, 255)
+            return img_copy
+
+        # Simple item props
+        if any(k in p for k in ["key", "chest", "door", "cauldron", "potion", "orb", "gem", "lantern"]):
+            if "key" in p:
+                draw_rect(26, 28, 38, 32, (240, 210, 80, 255))
+                draw_rect(22, 26, 26, 34, (240, 210, 80, 255))
+                draw_rect(36, 32, 40, 34, (200, 170, 60, 255))
+            elif "chest" in p:
+                draw_rect(18, 30, 46, 46, (150, 90, 50, 255))
+                draw_rect(18, 28, 46, 33, (180, 120, 70, 255))
+                draw_rect(30, 36, 34, 40, (230, 200, 90, 255))
+            elif "door" in p:
+                draw_rect(20, 18, 44, 52, (120, 80, 60, 255))
+                draw_rect(22, 22, 42, 50, (150, 100, 70, 255))
+                draw_rect(38, 34, 40, 36, (220, 200, 90, 255))
+            elif "cauldron" in p or "potion" in p:
+                draw_rect(22, 34, 42, 48, (60, 60, 70, 255))
+                draw_rect(24, 30, 40, 34, (120, 255, 140, 255))
+                draw_rect(28, 32, 30, 34, (255, 255, 255, 255))
+            else:
+                draw_rect(26, 28, 38, 40, (120, 180, 255, 255))
+                draw_rect(28, 30, 36, 38, (200, 240, 255, 255))
+            return outline()
+
+        # Character placeholder (more fantasy flavor)
+        skin = (240, 200, 170, 255)
+        hair = (90, 60, 30, 255)
+        if role in ["npc", "npc_healed"]:
+            outfit1 = (180, 120, 60, 255)
+            outfit2 = (90, 140, 90, 255)
+        else:
+            outfit1 = (70, 130, 220, 255)
+            outfit2 = (220, 80, 80, 255)
+
+        # Head
+        for y in range(18, 28):
+            for x in range(26, 38):
+                px[x, y] = skin
+        # Hair
+        draw_rect(26, 18, 38, 21, hair)
+        # Torso / robe
+        if "wizard" in p or "mage" in p or "robe" in p:
+            draw_rect(22, 28, 42, 46, outfit1)
+            draw_rect(30, 28, 34, 46, outfit2)
+            # Staff
+            draw_rect(44, 26, 46, 52, (120, 80, 50, 255))
+            draw_rect(42, 24, 48, 28, (120, 200, 255, 255))
+        elif "princess" in p or "queen" in p:
+            draw_rect(22, 28, 42, 46, outfit1)
+            draw_rect(24, 30, 40, 34, outfit2)
+            # Crown
+            draw_rect(28, 14, 36, 18, (240, 210, 80, 255))
+            draw_rect(30, 12, 34, 14, (240, 210, 80, 255))
+        elif "king" in p:
+            draw_rect(22, 28, 42, 44, outfit1)
+            draw_rect(22, 36, 42, 38, outfit2)
+            draw_rect(28, 14, 36, 18, (240, 210, 80, 255))
+            draw_rect(26, 18, 38, 20, (200, 50, 50, 255))
+        else:
+            draw_rect(24, 28, 40, 40, outfit1)
+            # Belt/accents
+            draw_rect(24, 34, 40, 35, outfit2)
+        # Legs
+        draw_rect(26, 40, 31, 50, (60, 60, 80, 255))
+        draw_rect(33, 40, 38, 50, (60, 60, 80, 255))
+        # Boots
+        draw_rect(25, 50, 31, 53, (90, 60, 40, 255))
+        draw_rect(33, 50, 39, 53, (90, 60, 40, 255))
+
+        return outline()
+
+
+# ============================================================
+# GAME DESIGNER
+# ============================================================
+
+class GameDesigner:
+    def __init__(self, client: OpenAIClient):
+        self.client = client
+
+    def _pick_distinct_colors(self):
+        # Keep it simple and readable; we inject these into sprite_desc to force variety.
+        base = [
+            "crimson and navy with gold accents",
+            "teal and cream with copper accents",
+            "forest green and brown with amber accents",
+            "violet and black with silver accents",
+            "white and sky-blue with gold accents",
+            "orange and charcoal with turquoise accents",
+        ]
+        c1 = random.choice(base)
+        c2 = random.choice([c for c in base if c != c1])
+        return c1, c2
+
+    def _pick_archetypes(self, user_prompt: str, quest_type: str):
+        """Pick distinct fantasy archetypes, nudging toward what user asked for."""
+        p = user_prompt.lower()
+        pool = ["knight", "princess", "wizard", "king", "queen", "ranger", "rogue", "cleric", "bard", "alchemist"]
+        # If the quest is a cure quest, bias toward a sick royal/patient NPC.
+        if quest_type == "cure":
+            npc = "princess" if random.random() < 0.7 else random.choice(["prince", "queen", "king", "cleric"])
+            player = random.choice([a for a in ["alchemist", "wizard", "cleric"] if a != npc])
+            return player, npc
+
+        if "princess" in p:
+            player = "princess"
+        elif "king" in p:
+            player = "knight"
+        elif "wizard" in p or "mage" in p:
+            player = "wizard"
+        elif "alchemist" in p or "potion" in p:
+            player = "alchemist"
+        else:
+            player = random.choice(pool)
+        npc = random.choice([a for a in pool if a != player])
+        return player, npc
+    
+    def design_game(self, user_prompt: str, quest_type_override: str | None = None) -> dict:
+        global LAST_QUEST_TYPE
+        quest_types = list(ALLOWED_GOALS)
+        if quest_type_override in quest_types:
+            quest_type_hint = quest_type_override
+        elif LAST_QUEST_TYPE in quest_types:
+            quest_types = [q for q in quest_types if q != LAST_QUEST_TYPE]
+            quest_type_hint = random.choice(quest_types)
+        else:
+            quest_type_hint = random.choice(quest_types)
+        LAST_QUEST_TYPE = quest_type_hint
+        player_colors, npc_colors = self._pick_distinct_colors()
+        player_arch, npc_arch = self._pick_archetypes(user_prompt, quest_type_hint)
+        design_prompt = f'''Create a peaceful exploration game based on: "{user_prompt}"
+
+Return ONLY JSON:
+
+{{
+    "title": "Game Title (max 20 chars)",
+    "story": "One sentence story hook",
+    "time_of_day": "day/night/dawn/dusk/sunset",
+
+    "player": {{
+        "name": "Hero Name",
+        "sprite_desc": "Create ONE {player_arch} hero. Include face, hair, and visible hands. Outfit must match: {player_arch}. Add iconic props (crown/staff/sword/cape) as appropriate. Use this color palette: {player_colors}. SINGLE character only.",
+        "start_x": 2, "start_y": 8
+    }},
+
+    "npc": {{
+        "name": "NPC Name",
+        "sprite_desc": "Create ONE {npc_arch} NPC. Ensure they contrast strongly with the player (different silhouette, outfit type, and palette). Add iconic props (lantern/book/staff/keys) as appropriate. Use this color palette: {npc_colors}. SINGLE character only.",
+        "x": 5, "y": 4,
+        "dialogue_intro": "Short greeting that mentions the quest",
+        "dialogue_hint": "Clear hint for the NEXT step",
+        "dialogue_progress": "Short progress update",
+        "dialogue_complete": "Clear completion line"
+    }},
+
+    "terrain": {{
+        "type": "forest/desert/snow/castle/beach/meadow/town",
+        "features": ["water", "trees", "rocks", "flowers", "path"]
+    }},
+
+    "quest": {{
+        "type": "{quest_type_hint}",
+        "goal": "Short objective text for the UI (creative, not generic)",
+        "steps": ["Step 1", "Step 2", "Step 3 (clear actions)"],
+
+        "items": [
+            {{"id": "item1", "name": "Item 1 Name", "sprite_desc": "detailed item sprite description: shape, material, main color, highlight color. If potion: glass bottle with colored liquid.", "x": 10, "y": 3}},
+            {{"id": "item2", "name": "Item 2 Name", "sprite_desc": "detailed item sprite description: shape, material, main color, highlight color. If ingredient: herb/flower/crystal with clear silhouette.", "x": 13, "y": 7}},
+            {{"id": "item3", "name": "Item 3 Name", "sprite_desc": "detailed item sprite description: shape, material, main color, highlight color.", "x": 7, "y": 9}}
+        ],
+
+        "mix_station": {{
+            "name": "Cauldron/Alchemy Table",
+            "sprite_desc": "cauldron prop: iron cauldron with glowing liquid, bubbles, small runes",
+            "x": 9, "y": 5
+        }},
+
+        "npc_healed_sprite_desc": "ONLY for type=cure: healed version of the NPC sprite",
+
+        "chest": {{
+            "name": "Old Chest",
+            "sprite_desc": "treasure chest prop: wooden chest with metal bands and latch",
+            "x": 12, "y": 4
+        }},
+
+        "key": {{
+            "name": "Old Key",
+            "sprite_desc": "key item: ornate brass key with visible teeth and keyring hole"
+        }},
+
+        "door": {{
+            "name": "Locked Door",
+            "sprite_desc": "door prop: wooden door or stone arch with visible lock and handle",
+            "x": 14, "y": 6
+        }}
+    }}
+}}
+
+RULES:
+- Map is 16x12 tiles
+- Use the specified quest type: {quest_type_hint}
+- For type=cure: items are ingredients, include mix_station and npc_healed_sprite_desc
+- For type=key_and_door: include chest, key, and door; items can be empty or small extras
+- For type=lost_item: include 1 item in items
+- For type=repair_bridge: do NOT place a chest/door/key; the goal is to repair a broken bridge by buying materials (planks, rope, nails) from a shop, then using them at the bridge.
+- Make sprite_desc very detailed (colors, outfit, pose, mood) and match the user_prompt theme
+- Characters should be imaginative and distinct, not generic
+- If the user_prompt does NOT specify the objective, invent a unique creative objective and steps.
+- Player and NPC must look clearly different (color palette, silhouette, role).
+- Dialogue must be 1-2 short sentences each (no cutoff), with clear direction for what to do next.
+- The quest goal and steps must reference concrete nouns (NPC name, item names, place names) and be logically consistent.
+- This is a peaceful exploration game, no combat'''
+
+        print("Generating game design...")
+        response = self.client.generate_text(design_prompt)
+        
+        response = response.strip()
+        if "```" in response:
+            response = response.split("```")[1]
+            if response.startswith("json"):
+                response = response[4:]
+        
+        try:
+            game = json.loads(response.strip())
+            return self._normalize_game(game)
+        except:
+            return self._normalize_game(self._fallback(user_prompt, quest_type_hint))
+
+    def _normalize_game(self, game: dict) -> dict:
+        """Ensure required quest fields exist and sanitize missing data."""
+        quest = game.get("quest", {})
+        allowed = {"cure", "key_and_door", "lost_item"}
+        if quest.get("type") not in allowed:
+            quest["type"] = random.choice(list(allowed))
+
+        # Ensure items
+        items = quest.get("items") or game.get("items") or []
+        if not items:
+            items = [
+                {"id": "item1", "name": "Herb", "sprite_desc": "small healing herb", "x": 10, "y": 3},
+                {"id": "item2", "name": "Bloom", "sprite_desc": "glowing flower bud", "x": 12, "y": 6},
+                {"id": "item3", "name": "Dew", "sprite_desc": "tiny vial of dew", "x": 7, "y": 9},
+            ]
+        quest["items"] = items
+
+        # Cure quest requirements
+        if quest["type"] == "cure":
+            # Force "sick" visuals for the NPC, and a clear healed variant.
+            npc = game.get("npc", {})
+            if npc and "sick" not in (npc.get("sprite_desc", "").lower()):
+                npc["sprite_desc"] = npc.get("sprite_desc", "fantasy NPC") + ". They look sick: pale skin, tired eyes, slumped posture, wrapped in a blanket or with a hand on stomach."
+            if len(quest["items"]) < 3:
+                base = quest["items"][0]
+                while len(quest["items"]) < 3:
+                    idx = len(quest["items"]) + 1
+                    quest["items"].append({
+                        "id": f"item{idx}",
+                        "name": f"{base['name']} {idx}",
+                        "sprite_desc": base["sprite_desc"],
+                        "x": random.randint(1, 14),
+                        "y": random.randint(1, 10),
+                    })
+            if not quest.get("mix_station"):
+                quest["mix_station"] = {"name": "Cauldron", "sprite_desc": "small iron cauldron with green liquid", "x": 9, "y": 5}
+            if not quest.get("npc_healed_sprite_desc"):
+                npc_desc = game.get("npc", {}).get("sprite_desc", "kind villager")
+                quest["npc_healed_sprite_desc"] = f"{npc_desc}, now healthy and smiling with brighter colors"
+
+        # Key and door requirements
+        if quest["type"] == "key_and_door":
+            if not quest.get("chest"):
+                quest["chest"] = {"name": "Old Chest", "sprite_desc": "wooden treasure chest with metal trim", "x": 12, "y": 4}
+            if not quest.get("key"):
+                quest["key"] = {"name": "Old Key", "sprite_desc": "antique brass key with ornate teeth"}
+            if not quest.get("door"):
+                quest["door"] = {"name": "Locked Door", "sprite_desc": "stone doorway with iron bands", "x": 14, "y": 6}
+
+        # Lost item requirements
+        if quest["type"] == "lost_item":
+            if len(quest["items"]) > 1:
+                quest["items"] = [quest["items"][0]]
+
+        # Repair bridge quest requirements
+        if quest["type"] == "repair_bridge":
+            quest["items"] = [
+                {"id": "planks", "name": "Wooden Planks", "sprite_desc": "stack of wooden planks tied with rope", "x": 0, "y": 0},
+                {"id": "rope", "name": "Sturdy Rope", "sprite_desc": "coiled rope with a knot, tan color", "x": 0, "y": 0},
+                {"id": "nails", "name": "Iron Nails", "sprite_desc": "small pouch of iron nails with a few nails visible", "x": 0, "y": 0},
+            ]
+            quest.pop("mix_station", None)
+            quest.pop("npc_healed_sprite_desc", None)
+            quest.pop("chest", None)
+            quest.pop("key", None)
+            quest.pop("door", None)
+
+        goal = quest.get("goal", "")
+        if (not goal) or (len(goal) < 12) or any(bad in goal.lower() for bad in ["complete", "finish", "win", "quest"]):
+            quest["goal"] = self._flavored_goal(game, quest)
+        steps = quest.get("steps") or []
+        if (not isinstance(steps, list)) or len(steps) < 3:
+            quest["steps"] = self._flavored_steps(quest)
+
+        game["quest"] = quest
+        return game
+
+    def _flavored_goal(self, game: dict, quest: dict) -> str:
+        terrain = game.get("terrain", {}).get("type", "village")
+        time_of_day = game.get("time_of_day", "day")
+        npc_name = game.get("npc", {}).get("name", "the NPC")
+        item_names = [it.get("name", "item") for it in (quest.get("items") or [])][:3]
+        base = [
+            f"Restore calm to the {terrain}",
+            f"Help the {terrain} folk at {time_of_day}",
+            f"Recover a sacred relic of the {terrain}",
+            f"Complete the ritual before {time_of_day} ends",
+            f"Rekindle the hope of the {terrain}",
+        ]
+        if quest.get("type") == "cure":
+            base += [
+                f"Cure {npc_name} with a handmade remedy",
+                f"Brew a healing tonic using {', '.join(item_names) if item_names else 'rare ingredients'}",
+                f"Mix a restorative elixir and deliver it to {npc_name}",
+            ]
+        if quest.get("type") == "key_and_door":
+            base += [
+                "Unseal the ancient gateway",
+                "Unlock the forgotten passage",
+                "Open the way to the hidden sanctuary",
+            ]
+        if quest.get("type") == "repair_bridge":
+            base += [
+                "Repair the broken bridge so travelers can pass",
+                "Buy supplies and fix the bridge crossing",
+                "Rebuild the bridge to reach the far side",
+            ]
+        if quest.get("type") == "lost_item":
+            base += [
+                f"Return the cherished keepsake to {npc_name}",
+                f"Find the missing heirloom for {npc_name}",
+                f"Recover the lost memento and bring it back to {npc_name}",
+            ]
+        return random.choice(base)
+
+    def _flavored_steps(self, quest: dict) -> list:
+        if quest.get("type") == "cure":
+            return ["Talk to the patient", "Find three ingredients", "Brew the remedy at the cauldron", "Deliver it to the patient"]
+        if quest.get("type") == "key_and_door":
+            return ["Ask for directions", "Open the old chest", "Claim the key", "Unlock the sealed door"]
+        if quest.get("type") == "lost_item":
+            return ["Ask what was lost", "Search the area", "Recover the item", "Return it to the owner"]
+        if quest.get("type") == "repair_bridge":
+            return ["Talk to the foreman", "Visit the shop and buy planks, rope, and nails", "Repair the bridge", "Cross safely"]
+        return ["Explore the area", "Complete the objective"]
+    
+    def _fallback(self, prompt: str, quest_type: str = "cure") -> dict:
+        prompt_lower = prompt.lower()
+        if any(w in prompt_lower for w in ["night", "dark", "moon", "spooky"]):
+            time = "night"
+            terrain = "castle"
+        elif any(w in prompt_lower for w in ["forest", "tree", "wood"]):
+            time = "day"
+            terrain = "forest"
+        elif any(w in prompt_lower for w in ["beach", "ocean", "sea"]):
+            time = "day"
+            terrain = "beach"
+        elif any(w in prompt_lower for w in ["snow", "ice", "winter"]):
+            time = "day"
+            terrain = "snow"
+        else:
+            time = "day"
+            terrain = "meadow"
+        
+        base_game = {
+            "title": f"Quest: {prompt[:12]}",
+            "story": "An adventure awaits!",
+            "time_of_day": time,
+            "player": {"name": "Hero", "sprite_desc": "young adventurer with blue cape and brown boots", "start_x": 2, "start_y": 8},
+            "npc": {"name": "Elder", "sprite_desc": "wise old sage with white beard and purple robe", "x": 5, "y": 4,
+                    "dialogue_intro": "Welcome, traveler!", "dialogue_hint": "Seek the three treasures.",
+                    "dialogue_progress": "You're doing well!", "dialogue_complete": "You did it!"},
+            "terrain": {"type": terrain, "features": ["trees", "rocks", "path", "flowers"]},
+        }
+
+        if quest_type == "key_and_door":
+            base_game["quest"] = {
+                "type": "key_and_door",
+                "goal": "Find the key and open the door",
+                "steps": ["Open the chest", "Pick up the key", "Unlock the door"],
+                "items": [{"id": "item1", "name": "Note", "sprite_desc": "small paper note", "x": 8, "y": 6}],
+                "chest": {"name": "Old Chest", "sprite_desc": "wooden treasure chest", "x": 12, "y": 4},
+                "key": {"name": "Old Key", "sprite_desc": "antique brass key"},
+                "door": {"name": "Locked Door", "sprite_desc": "stone door with iron bands", "x": 14, "y": 6}
+            }
+        elif quest_type == "lost_item":
+            base_game["quest"] = {
+                "type": "lost_item",
+                "goal": "Find the lost item",
+                "steps": ["Find the item", "Return it to the NPC"],
+                "items": [{"id": "item1", "name": "Lost Locket", "sprite_desc": "small golden locket", "x": 9, "y": 6}],
+            }
+        else:
+            base_game["quest"] = {
+                "type": "cure",
+                "goal": "Brew a healing potion",
+                "steps": ["Find 3 ingredients", "Mix the potion", "Heal the NPC"],
+                "items": [
+                    {"id": "item1", "name": "Crystal Herb", "sprite_desc": "glowing blue herb bundle", "x": 10, "y": 3},
+                    {"id": "item2", "name": "Sunleaf", "sprite_desc": "golden leaf with warm glow", "x": 13, "y": 7},
+                    {"id": "item3", "name": "Moondew", "sprite_desc": "small vial of shimmering dew", "x": 7, "y": 9}
+                ],
+                "mix_station": {"name": "Cauldron", "sprite_desc": "small iron cauldron with green liquid", "x": 9, "y": 5},
+                "npc_healed_sprite_desc": "same NPC but healthy and smiling, brighter colors"
+            }
+        return base_game
+
+
+# ============================================================
+# SPRITE GENERATOR
+# ============================================================
+
+class SpriteGenerator:
+    def __init__(self, client: OpenAIClient, delay: float = 0.5):
+        self.client = client
+        self.delay = delay
+
+    def _gen(self, desc: str, role: str, theme: str) -> Image.Image:
+        img = self.client.generate_image(desc, role=role, theme=theme)
+        if self.client.last_image_was_fallback:
+            print(f"    ⚠ fallback sprite for {role}: {self.client.last_image_error}")
+        return img
+    
+    def generate_all(self, game: dict, reuse_player_sprite: Image.Image | None = None) -> dict:
+        sprites = {}
+        quest = game.get("quest", {})
+        items = quest.get("items", [])
+        theme = f"{game.get('terrain', {}).get('type', '')} {game.get('time_of_day', 'day')} {game.get('story', '')}"
+        
+        if reuse_player_sprite is None:
+            print("  Player...")
+            sprites["player"] = self._gen(game["player"]["sprite_desc"], role="player", theme=theme)
+            time.sleep(self.delay)
+        else:
+            sprites["player"] = reuse_player_sprite
+        
+        print("  NPC...")
+        sprites["npc"] = self._gen(game["npc"]["sprite_desc"], role="npc", theme=theme)
+        time.sleep(self.delay)
+
+        # Indoor NPC (single enterable building)
+        print("  npc_shop...")
+        sprites["npc_shop"] = self._gen(
+            "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
+            role="npc",
+            theme=theme
+        )
+        time.sleep(self.delay)
+        
+        if items:
+            print("  Item...")
+            sprites["item"] = self._gen(items[0]["sprite_desc"], role="item", theme=theme)
+            time.sleep(self.delay)
+        if len(items) > 1:
+            print("  Second item...")
+            sprites["item2"] = self._gen(items[1]["sprite_desc"], role="item", theme=theme)
+            time.sleep(self.delay)
+
+        # Quest-specific props
+        if quest.get("type") == "cure":
+            print("  Mix station...")
+            mix = quest.get("mix_station", {})
+            sprites["mix_station"] = self._gen(mix.get("sprite_desc", "small potion cauldron"), role="cauldron", theme=theme)
+            time.sleep(self.delay)
+
+            print("  Healed NPC...")
+            sprites["npc_healed"] = self._gen(quest.get("npc_healed_sprite_desc", "healthy smiling villager"), role="npc_healed", theme=theme)
+            time.sleep(self.delay)
+
+        if quest.get("type") == "key_and_door":
+            print("  Chest...")
+            chest = quest.get("chest", {})
+            sprites["chest"] = self._gen(chest.get("sprite_desc", "old wooden chest"), role="chest", theme=theme)
+            time.sleep(self.delay)
+
+            print("  Key...")
+            key = quest.get("key", {})
+            sprites["key"] = self._gen(key.get("sprite_desc", "old brass key"), role="key", theme=theme)
+            time.sleep(self.delay)
+
+            print("  Door...")
+            door = quest.get("door", {})
+            sprites["door"] = self._gen(door.get("sprite_desc", "stone door"), role="door", theme=theme)
+            time.sleep(self.delay)
+        
+        total_calls = len(sprites)
+        print(f"\n  Total API calls: {total_calls}")
+        return sprites
+
+
+# ============================================================
+# TERRAIN RENDERER (Code-drawn, Pokemon style!)
+# ============================================================
+
+class TerrainRenderer:
+    """Draws terrain like Pokemon - solid colors with simple shapes"""
+    
+    # Color palettes for different times/terrains
+    PALETTES = {
+        "day_meadow": {
+            "bg": (120, 200, 120),
+            "grass_dark": (90, 170, 90),
+            "grass_light": (140, 220, 140),
+            "path": (210, 180, 140),
+            "water": (100, 150, 255),
+            "water_light": (140, 180, 255),
+            "tree_trunk": (120, 80, 50),
+            "tree_leaves": (60, 140, 60),
+            "rock": (140, 140, 150),
+            "flower1": (255, 100, 100),
+            "flower2": (255, 255, 100),
+            "flower3": (200, 100, 255),
+        },
+        "day_forest": {
+            "bg": (80, 140, 80),
+            "grass_dark": (60, 110, 60),
+            "grass_light": (100, 160, 100),
+            "path": (160, 130, 90),
+            "water": (80, 130, 200),
+            "water_light": (110, 160, 220),
+            "tree_trunk": (100, 60, 40),
+            "tree_leaves": (40, 100, 40),
+            "rock": (120, 120, 130),
+            "flower1": (255, 200, 200),
+            "flower2": (200, 255, 200),
+            "flower3": (200, 200, 255),
+        },
+        "night_castle": {
+            "bg": (40, 40, 70),
+            "grass_dark": (30, 50, 50),
+            "grass_light": (50, 70, 70),
+            "path": (80, 80, 100),
+            "water": (40, 60, 120),
+            "water_light": (60, 80, 140),
+            "tree_trunk": (50, 40, 40),
+            "tree_leaves": (30, 50, 50),
+            "rock": (70, 70, 90),
+            "flower1": (150, 100, 150),
+            "flower2": (100, 100, 150),
+            "flower3": (150, 150, 180),
+        },
+        "day_beach": {
+            "bg": (240, 220, 180),
+            "grass_dark": (200, 180, 140),
+            "grass_light": (250, 235, 200),
+            "path": (230, 210, 170),
+            "water": (80, 180, 230),
+            "water_light": (120, 210, 250),
+            "tree_trunk": (140, 100, 60),
+            "tree_leaves": (100, 180, 100),
+            "rock": (180, 170, 160),
+            "flower1": (255, 150, 150),
+            "flower2": (150, 255, 200),
+            "flower3": (255, 200, 150),
+        },
+        "day_town": {
+            "bg": (110, 180, 110),
+            "grass_dark": (80, 150, 80),
+            "grass_light": (130, 200, 130),
+            "path": (210, 180, 120),
+            "water": (90, 150, 230),
+            "water_light": (130, 180, 240),
+            "tree_trunk": (130, 90, 60),
+            "tree_leaves": (70, 150, 70),
+            "rock": (150, 150, 160),
+            "flower1": (255, 150, 150),
+            "flower2": (255, 230, 120),
+            "flower3": (170, 140, 255),
+        },
+        "day_snow": {
+            "bg": (230, 240, 250),
+            "grass_dark": (200, 220, 240),
+            "grass_light": (245, 250, 255),
+            "path": (210, 210, 220),
+            "water": (150, 200, 255),
+            "water_light": (180, 220, 255),
+            "tree_trunk": (100, 80, 70),
+            "tree_leaves": (60, 100, 80),
+            "rock": (180, 185, 195),
+            "flower1": (255, 200, 200),
+            "flower2": (200, 220, 255),
+            "flower3": (220, 200, 255),
+        },
+        "sunset_meadow": {
+            "bg": (180, 140, 120),
+            "grass_dark": (140, 110, 90),
+            "grass_light": (200, 160, 130),
+            "path": (200, 170, 140),
+            "water": (150, 120, 180),
+            "water_light": (180, 150, 200),
+            "tree_trunk": (100, 70, 50),
+            "tree_leaves": (120, 100, 70),
+            "rock": (150, 130, 120),
+            "flower1": (255, 150, 100),
+            "flower2": (255, 200, 100),
+            "flower3": (255, 130, 130),
+        },
+    }
+    
+    def __init__(self, game: dict, config: Config):
+        self.config = config
+        self.ts = config.TILE_SIZE
+        self.mw = config.MAP_WIDTH
+        self.mh = config.MAP_HEIGHT
+        
+        # Get palette
+        time_of_day = game.get("time_of_day", "day")
+        terrain_type = game.get("terrain", {}).get("type", "meadow")
+        palette_key = f"{time_of_day}_{terrain_type}"
+        if palette_key not in self.PALETTES:
+            # Fallback
+            if "night" in time_of_day:
+                palette_key = "night_castle"
+            elif "sunset" in time_of_day or "dusk" in time_of_day:
+                palette_key = "sunset_meadow"
+            else:
+                palette_key = "day_meadow"
+        
+        self.palette = self.PALETTES[palette_key]
+        self.features = game.get("terrain", {}).get("features", ["trees", "path"])
+        
+        # Generate random terrain layout
+        self.generate_layout()
+    
+    def generate_layout(self):
+        """Generate terrain features"""
+        self.water_tiles = set()
+        self.path_tiles = set()
+        self.trees = []
+        self.rocks = []
+        self.flowers = []
+        self.bushes = []
+        self.lamps = []
+        self.signs = []
+        self.ruins = []
+        self.tile_variation = {}
+        
+        # Add a winding path
+        if "path" in self.features:
+            px, py = 0, self.mh // 2
+            while px < self.mw:
+                self.path_tiles.add((px, py))
+                self.path_tiles.add((px, py + 1))
+                px += 1
+                if random.random() < 0.3:
+                    py = max(2, min(self.mh - 3, py + random.choice([-1, 1])))
+        
+        # Add water (pond or stream)
+        if "water" in self.features:
+            wx, wy = random.randint(8, 12), random.randint(2, 4)
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    if (dx*dx + dy*dy) < 6:
+                        self.water_tiles.add((wx + dx, wy + dy))
+        
+        # Add trees
+        if "trees" in self.features:
+            for _ in range(8):
+                tx, ty = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
+                if (tx, ty) not in self.water_tiles and (tx, ty) not in self.path_tiles:
+                    self.trees.append((tx, ty))
+        
+        # Add rocks
+        if "rocks" in self.features:
+            for _ in range(5):
+                rx, ry = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
+                if (rx, ry) not in self.water_tiles:
+                    self.rocks.append((rx, ry))
+        
+        # Add flowers
+        if "flowers" in self.features:
+            for _ in range(25):
+                fx, fy = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
+                if (fx, fy) not in self.water_tiles and (fx, fy) not in self.path_tiles:
+                    self.flowers.append((
+                        fx * self.ts + random.randint(6, self.ts-6),
+                        fy * self.ts + random.randint(6, self.ts-6),
+                        random.choice(["flower1", "flower2", "flower3"]),
+                        random.uniform(0, math.pi * 2)
+                    ))
+
+        # Add bushes for depth
+        for _ in range(10):
+            bx, by = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
+            if (bx, by) not in self.water_tiles and (bx, by) not in self.path_tiles:
+                self.bushes.append((bx, by))
+
+        # Add lamps/signs/ruins for richer environments
+        for _ in range(4):
+            lx, ly = random.randint(1, self.mw-2), random.randint(1, self.mh-2)
+            if (lx, ly) not in self.water_tiles and (lx, ly) in self.path_tiles:
+                self.lamps.append((lx, ly))
+        for _ in range(4):
+            sx, sy = random.randint(1, self.mw-2), random.randint(1, self.mh-2)
+            if (sx, sy) not in self.water_tiles and (sx, sy) not in self.path_tiles:
+                self.signs.append((sx, sy))
+        for _ in range(3):
+            rx, ry = random.randint(1, self.mw-2), random.randint(1, self.mh-2)
+            if (rx, ry) not in self.water_tiles and (rx, ry) not in self.path_tiles:
+                self.ruins.append((rx, ry))
+
+        # Tile variation map for subtle texture
+        for y in range(self.mh):
+            for x in range(self.mw):
+                self.tile_variation[(x, y)] = random.choice([0, 1, 2])
+    
+    def draw(self, screen, t: float = 0.0):
+        ts = self.ts
+        
+        # Fill background
+        map_rect = (0, 0, self.mw * ts, self.mh * ts)
+        screen.fill(self.palette["bg"], map_rect)
+
+        # Draw base tiles (grass/path/water)
+        for y in range(self.mh):
+            for x in range(self.mw):
+                rect = (x * ts, y * ts, ts, ts)
+                if (x, y) in self.water_tiles:
+                    pygame.draw.rect(screen, self.palette["water"], rect)
+                    pygame.draw.line(screen, self.palette["water_light"], (x * ts, y * ts), (x * ts + ts, y * ts), 1)
+                    # Animated water shimmer
+                    wave = int((t * 10 + (x * 3 + y * 5)) % ts)
+                    pygame.draw.line(
+                        screen, self.palette["water_light"],
+                        (x * ts, y * ts + wave),
+                        (x * ts + ts, y * ts + wave), 2
+                    )
+                elif (x, y) in self.path_tiles:
+                    pygame.draw.rect(screen, self.palette["path"], rect)
+                    # Path texture (deterministic dots)
+                    v = self.tile_variation.get((x, y), 0)
+                    if v == 0:
+                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 10, y * ts + 12), 2)
+                    elif v == 1:
+                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 22, y * ts + 18), 2)
+                    else:
+                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 16, y * ts + 26), 2)
+                else:
+                    v = self.tile_variation.get((x, y), 0)
+                    color = self.palette["grass_light"] if v == 0 else self.palette["grass_dark"]
+                    pygame.draw.rect(screen, color, rect)
+                # Subtle tile edge for depth
+                if (x + y) % 2 == 0:
+                    pygame.draw.line(screen, (0, 0, 0, 30), (x * ts, y * ts), (x * ts + ts, y * ts), 1)
+                if (x + y) % 4 == 0:
+                    pygame.draw.line(screen, (255, 255, 255, 20), (x * ts, y * ts), (x * ts, y * ts + ts), 1)
+        
+        # Draw rocks
+        for rx, ry in self.rocks:
+            cx, cy = rx * ts + ts//2, ry * ts + ts//2
+            pygame.draw.ellipse(screen, self.palette["rock"], (cx - 15, cy - 10, 30, 20))
+            pygame.draw.ellipse(screen, (self.palette["rock"][0]+20, self.palette["rock"][1]+20, self.palette["rock"][2]+20),
+                               (cx - 10, cy - 8, 15, 10))
+            pygame.draw.ellipse(screen, (0, 0, 0), (cx - 16, cy + 6, 32, 8))
+
+        # Draw bushes
+        for bx, by in self.bushes:
+            cx, cy = bx * ts + ts//2, by * ts + ts//2
+            pygame.draw.circle(screen, self.palette["tree_leaves"], (cx - 8, cy + 2), 10)
+            pygame.draw.circle(screen, self.palette["tree_leaves"], (cx + 6, cy + 4), 12)
+            pygame.draw.circle(screen, self.palette["tree_leaves"], (cx, cy - 4), 12)
+            pygame.draw.ellipse(screen, (0, 0, 0), (cx - 12, cy + 10, 26, 6))
+        
+        # Draw flowers
+        for fx, fy, ftype, phase in self.flowers:
+            sway = int(math.sin(t * 2 + phase) * 2)
+            pygame.draw.circle(screen, self.palette[ftype], (fx + sway, fy), 4)
+            pygame.draw.circle(screen, (255, 255, 200), (fx + sway, fy), 2)
+        
+        # Draw trees
+        for tx, ty in self.trees:
+            cx, cy = tx * ts + ts//2, ty * ts + ts//2
+            leaf_sway = int(math.sin(t * 1.5 + tx) * 2)
+            # Trunk
+            pygame.draw.rect(screen, self.palette["tree_trunk"], (cx - 5, cy, 10, 20))
+            # Leaves (overlapping circles)
+            pygame.draw.circle(screen, self.palette["tree_leaves"], (cx + leaf_sway, cy - 10), 18)
+            pygame.draw.circle(screen, self.palette["tree_leaves"], (cx - 10 + leaf_sway, cy), 14)
+            pygame.draw.circle(screen, self.palette["tree_leaves"], (cx + 10 + leaf_sway, cy), 14)
+            pygame.draw.ellipse(screen, (0, 0, 0), (cx - 14, cy + 16, 28, 8))
+
+        # Draw lamps (glow at night)
+        for lx, ly in self.lamps:
+            cx, cy = lx * ts + ts//2, ly * ts + ts//2
+            pygame.draw.rect(screen, self.palette["tree_trunk"], (cx - 2, cy - 8, 4, 18))
+            pygame.draw.circle(screen, (255, 220, 120), (cx, cy - 10), 6)
+            bg = self.palette.get("bg", (0, 0, 0))
+            if sum(bg) / 3 < 120:
+                pygame.draw.circle(screen, (255, 220, 140), (cx, cy - 10), 14, 1)
+
+        # Draw signs
+        for sx, sy in self.signs:
+            cx, cy = sx * ts + ts//2, sy * ts + ts//2
+            pygame.draw.rect(screen, (140, 100, 70), (cx - 10, cy - 6, 20, 12))
+            pygame.draw.rect(screen, (120, 80, 50), (cx - 2, cy - 6, 4, 16))
+
+        # Draw ruins (stones)
+        for rx, ry in self.ruins:
+            cx, cy = rx * ts + ts//2, ry * ts + ts//2
+            pygame.draw.rect(screen, (120, 120, 130), (cx - 12, cy - 6, 24, 12))
+            pygame.draw.rect(screen, (150, 150, 160), (cx - 6, cy - 10, 12, 6))
+    
+    def get_solid_tiles(self) -> set:
+        """Return tiles that block movement"""
+        solid = set()
+        solid.update(self.water_tiles)
+        for tx, ty in self.trees:
+            solid.add((tx, ty))
+        for rx, ry in self.rocks:
+            solid.add((rx, ry))
+        return solid
+
+
+class InteriorRenderer:
+    """Simple interior map renderer (shop/house) with walls and floor."""
+    def __init__(self, config: Config, theme: str = "shop", door_x: int | None = None):
+        self.config = config
+        self.ts = config.TILE_SIZE
+        self.mw = config.MAP_WIDTH
+        self.mh = config.MAP_HEIGHT
+        self.theme = theme
+        self.door_x = door_x if door_x is not None else self.mw // 2
+
+        if theme == "apothecary":
+            self.floor = (135, 105, 85)
+            self.floor2 = (125, 95, 78)
+            self.wall = (55, 55, 75)
+            self.wall2 = (75, 75, 105)
+            self.shelf = (105, 65, 42)
+            self.accent = (120, 200, 255)
+        elif theme == "inn":
+            self.floor = (155, 125, 95)
+            self.floor2 = (145, 115, 88)
+            self.wall = (65, 60, 70)
+            self.wall2 = (90, 80, 100)
+            self.shelf = (120, 80, 55)
+            self.accent = (255, 220, 120)
+        elif theme == "house":
+            self.floor = (150, 135, 115)
+            self.floor2 = (140, 125, 108)
+            self.wall = (70, 70, 85)
+            self.wall2 = (95, 95, 120)
+            self.shelf = (125, 85, 58)
+            self.accent = (200, 255, 200)
+        elif theme == "shop":
+            self.floor = (150, 120, 90)
+            self.floor2 = (140, 110, 85)
+            self.wall = (60, 60, 80)
+            self.wall2 = (80, 80, 110)
+            self.shelf = (110, 70, 45)
+            self.accent = (120, 200, 255)
+        else:
+            self.floor = (140, 130, 120)
+            self.floor2 = (130, 120, 110)
+            self.wall = (70, 70, 90)
+            self.wall2 = (90, 90, 120)
+            self.shelf = (120, 80, 55)
+            self.accent = (255, 220, 120)
+
+    def draw(self, screen, t: float = 0.0):
+        ts = self.ts
+        # Floor
+        for y in range(self.mh):
+            for x in range(self.mw):
+                c = self.floor if (x + y) % 2 == 0 else self.floor2
+                pygame.draw.rect(screen, c, (x * ts, y * ts, ts, ts))
+        # Walls (border)
+        for x in range(self.mw):
+            pygame.draw.rect(screen, self.wall, (x * ts, 0, ts, ts))
+            pygame.draw.rect(screen, self.wall, (x * ts, (self.mh - 1) * ts, ts, ts))
+        for y in range(self.mh):
+            pygame.draw.rect(screen, self.wall, (0, y * ts, ts, ts))
+            pygame.draw.rect(screen, self.wall, ((self.mw - 1) * ts, y * ts, ts, ts))
+
+        # Doorway on bottom wall
+        dx = self.door_x
+        pygame.draw.rect(screen, self.wall2, (dx * ts, (self.mh - 1) * ts, ts, ts))
+        pygame.draw.rect(screen, (110, 70, 45), (dx * ts + 18, (self.mh - 1) * ts + 10, ts - 36, ts - 16), border_radius=6)
+        pygame.draw.circle(screen, (240, 210, 80), (dx * ts + ts - 24, (self.mh - 1) * ts + ts // 2), 3)
+
+        # Back wall detail
+        for x in range(2, self.mw - 2):
+            pygame.draw.rect(screen, self.wall2, (x * ts + 6, ts + 6, ts - 12, ts - 12), border_radius=4)
+
+        # Shelves / decor
+        for x in range(2, self.mw - 2, 4):
+            pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 3 - 12, 10))
+            # Bottles
+            bx = x * ts + 16
+            by = 2 * ts + 2
+            pygame.draw.rect(screen, self.accent, (bx, by + 14, 10, 14), border_radius=2)
+            pygame.draw.rect(screen, (200, 120, 255), (bx + 22, by + 18, 10, 10), border_radius=2)
+            pygame.draw.rect(screen, (120, 255, 180), (bx + 44, by + 16, 10, 12), border_radius=2)
+
+        # Warm light pool
+        glow = pygame.Surface((self.mw * ts, self.mh * ts), pygame.SRCALPHA)
+        cx, cy = (self.mw * ts) // 2, (self.mh * ts) // 2
+        for r in range(220, 20, -20):
+            a = int(20 * (r / 220))
+            pygame.draw.circle(glow, (*self.accent, a), (cx, cy), r)
+        screen.blit(glow, (0, 0))
+
+    def get_solid_tiles(self) -> set:
+        solid = set()
+        for x in range(self.mw):
+            solid.add((x, 0))
+            solid.add((x, self.mh - 1))
+        for y in range(self.mh):
+            solid.add((0, y))
+            solid.add((self.mw - 1, y))
+        # Carve doorway
+        solid.discard((self.door_x, self.mh - 1))
+        return solid
+
+
+# ============================================================
+# GAME ENGINE
+# ============================================================
+
+class GameEngine:
+    def __init__(self, levels: list, config: Config):
+        self.levels = levels
+        self.level_index = 0
+        self.config = config
+        self.running = True
+        
+        pygame.init()
+        self.screen = pygame.display.set_mode((config.GAME_WIDTH, config.GAME_HEIGHT))
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 24)
+        self.font_large = pygame.font.Font(None, 32)
+        self.font_title = pygame.font.Font(None, 38)
+
+        self.anim_time = 0.0
+        self.entity_phase = {}
+        self.surfaces = {}
+        self.sprite_offsets = {}
+
+        self.load_level(0)
+
+    def load_level(self, index: int):
+        self.level_index = index
+        level = self.levels[index]
+        self.game = level["game"]
+        sprites = level["sprites"]
+
+        title = self.game.get("title", "Adventure")
+        pygame.display.set_caption(f"{title} - Level {index + 1}/{len(self.levels)}")
+
+        time_of_day = self.game.get("time_of_day", "day")
+        allow_flash = time_of_day in ["night", "dusk", "sunset"]
+        self.effects = EffectsManager(allow_flash=allow_flash)
+        self.terrain = TerrainRenderer(self.game, self.config)
+        self.interior = InteriorRenderer(self.config, theme="shop", door_x=self.config.MAP_WIDTH // 2)
+
+        # Convert sprites
+        self.surfaces = {}
+        self.sprite_offsets = {}
+        ts = self.config.TILE_SIZE
+        for name, img in sprites.items():
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            surface = pygame.image.fromstring(img.tobytes(), img.size, "RGBA")
+            scale = 1.0
+            base_name = name.replace("_alt", "")
+            if base_name in ["player", "npc", "npc_healed"]:
+                scale = 1.75
+            elif base_name in ["door"]:
+                scale = 1.5
+            elif base_name in ["chest", "mix_station"]:
+                scale = 1.3
+            elif base_name in ["key"]:
+                scale = 1.1
+            size = max(1, int(ts * scale))
+            surf = pygame.transform.scale(surface, (size, size))
+            self.surfaces[name] = surf
+            off_x = (ts - size) // 2
+            off_y = ts - size
+            self.sprite_offsets[name] = (off_x, off_y)
+
+        self.anim_time = 0.0
+        self.entity_phase = {}
+        self.reset_game()
+        self.msg(f"Level {index + 1}/{len(self.levels)}: {title}")
+    
+    def reset_game(self):
+        ts = self.config.TILE_SIZE
+        quest = self.game.get("quest", {})
+        self.quest = quest
+        self.quest_type = quest.get("type", "lost_item")
+
+        # Build collision map (outdoor) early so we can place buildings safely.
+        self.solid_outdoor = self.terrain.get_solid_tiles()
+
+        # World state
+        self.scene = "outdoor"  # or "indoor"
+        self.current_building = None
+        self.money = 60
+
+        # Repair bridge state
+        self.bridge_repaired = False
+        self.bridge_tiles = set()
+        if self.quest_type == "repair_bridge":
+            bx = self.config.MAP_WIDTH // 2
+            by = self.config.MAP_HEIGHT // 2
+            self.bridge_tiles = {(bx, by), (bx, by + 1)}
+            for t in self.bridge_tiles:
+                self.solid_outdoor.add(t)
+
+        # Create 2 enterable buildings
+        mh = self.config.MAP_HEIGHT
+        entrance_shop = self._find_open_tile(3, mh // 2, solid=self.solid_outdoor)
+        entrance_inn = self._find_open_tile(12, mh // 2, solid=self.solid_outdoor)
+        door_x = self.config.MAP_WIDTH // 2
+
+        self.buildings = [
+            {
+                "name": "Shop",
+                "theme": "shop",
+                "npc": "Shopkeeper",
+                "dialogue": "Welcome. Potions and herbs are on the shelf.",
+                "entrance": entrance_shop,
+                "exit": (door_x, self.config.MAP_HEIGHT - 1),
+                "npc_pos": (self.config.MAP_WIDTH // 2 + 2, 4),
+                "npc_sprite_key": "npc_shop",
+                "goods": [
+                    {"id": "planks", "name": "Wooden Planks", "price": 20},
+                    {"id": "rope", "name": "Sturdy Rope", "price": 15},
+                    {"id": "nails", "name": "Iron Nails", "price": 10},
+                ],
+                "items": [],
+            },
+            {
+                "name": "Inn",
+                "theme": "inn",
+                "npc": "Innkeeper",
+                "dialogue": "Rest your feet. Travelers always have stories.",
+                "entrance": entrance_inn,
+                "exit": (door_x, self.config.MAP_HEIGHT - 1),
+                "npc_pos": (self.config.MAP_WIDTH // 2 + 2, 4),
+                "npc_sprite_key": "npc_shop",  # reuse indoor NPC sprite to keep API calls stable
+                "goods": [
+                    {"id": "tea", "name": "Warm Tea", "price": 5},
+                    {"id": "bread", "name": "Traveler's Bread", "price": 7},
+                ],
+                "items": [],
+            },
+        ]
+
+        self.player_x = self.game["player"]["start_x"] * ts
+        self.player_y = self.game["player"]["start_y"] * ts
+        self.is_moving = False
+
+        self.inventory = []
+        self.items_collected = set()
+        self.talked_to_npc = False
+        self.message = self.game.get("story", "")
+        self.message_timer = 300
+        self.game_won = False
+        self.quest_known = False
+
+        # Quest state
+        self.items = list(quest.get("items", []))
+        if self.quest_type == "repair_bridge":
+            # Materials come from the shop; no world pickups for this quest.
+            self.items = []
+        self.mix_station = quest.get("mix_station")
+        self.npc_healed = False
+        self.mixed_potion = False
+        self.potion_given = False
+
+        self.chest = quest.get("chest")
+        self.key = quest.get("key")
+        self.door = quest.get("door")
+        self.chest_opened = False
+        self.key_spawned = False
+        self.key_collected = False
+        self.door_opened = False
+        self.key_pos = None
+
+        self.lost_item_found = False
+
+        for b in self.buildings:
+            self.solid_outdoor.add((b["entrance"][0], b["entrance"][1]))
+
+        # Ensure important entities are on open tiles
+        self.solid = self.solid_outdoor
+        self._ensure_entity_positions()
+
+        # Add solid objects
+        npc = self.game["npc"]
+        self.solid.add((npc["x"], npc["y"]))
+        if self.mix_station:
+            self.solid.add((self.mix_station["x"], self.mix_station["y"]))
+        if self.chest and not self.chest_opened:
+            self.solid.add((self.chest["x"], self.chest["y"]))
+        if self.door and not self.door_opened:
+            self.solid.add((self.door["x"], self.door["y"]))
+
+        # Indoor collision map (set on enter)
+        self.solid_indoor = self.interior.get_solid_tiles()
+
+        # Animation phases
+        self.entity_phase = {
+            "player": random.random() * 10,
+            "npc": random.random() * 10,
+        }
+        for item in self.items:
+            self.entity_phase[item["id"]] = random.random() * 10
+        if self.chest:
+            self.entity_phase["chest"] = random.random() * 10
+        if self.door:
+            self.entity_phase["door"] = random.random() * 10
+        if self.mix_station:
+            self.entity_phase["mix_station"] = random.random() * 10
+        if self.key:
+            self.entity_phase["key"] = random.random() * 10
+
+    def _find_open_tile(self, x, y, solid: set | None = None):
+        """Find a nearby open tile if the desired one is blocked."""
+        solid_set = solid if solid is not None else getattr(self, "solid", set())
+        if (x, y) not in solid_set:
+            return x, y
+        for r in range(1, 5):
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < self.config.MAP_WIDTH and 0 <= ny < self.config.MAP_HEIGHT:
+                        if (nx, ny) not in solid_set:
+                            return nx, ny
+        return x, y
+
+    def _ensure_entity_positions(self):
+        """Clamp and adjust entity positions so they are playable."""
+        def clamp_tile(tx, ty):
+            tx = max(0, min(self.config.MAP_WIDTH - 1, int(tx)))
+            ty = max(0, min(self.config.MAP_HEIGHT - 1, int(ty)))
+            return tx, ty
+
+        # NPC
+        npc = self.game.get("npc", {})
+        if npc:
+            npc["x"], npc["y"] = clamp_tile(npc.get("x", 5), npc.get("y", 4))
+            npc["x"], npc["y"] = self._find_open_tile(npc["x"], npc["y"])
+
+        # Items
+        for item in self.items:
+            item["x"], item["y"] = clamp_tile(item.get("x", 8), item.get("y", 6))
+            item["x"], item["y"] = self._find_open_tile(item["x"], item["y"])
+
+        # Mix station
+        if self.mix_station:
+            self.mix_station["x"], self.mix_station["y"] = clamp_tile(self.mix_station.get("x", 9), self.mix_station.get("y", 5))
+            self.mix_station["x"], self.mix_station["y"] = self._find_open_tile(self.mix_station["x"], self.mix_station["y"])
+
+        # Chest
+        if self.chest:
+            self.chest["x"], self.chest["y"] = clamp_tile(self.chest.get("x", 12), self.chest.get("y", 4))
+            self.chest["x"], self.chest["y"] = self._find_open_tile(self.chest["x"], self.chest["y"])
+
+        # Door
+        if self.door:
+            self.door["x"], self.door["y"] = clamp_tile(self.door.get("x", 14), self.door.get("y", 6))
+            self.door["x"], self.door["y"] = self._find_open_tile(self.door["x"], self.door["y"])
+
+    def _entity_bob(self, key: str, moving: bool = False):
+        phase = self.entity_phase.get(key, 0.0)
+        speed = 6 if moving else 3
+        amp = self.config.WALK_BOB if moving else self.config.IDLE_BOB
+        y = int(math.sin(self.anim_time * speed + phase) * amp)
+        x = int(math.sin(self.anim_time * speed * 0.7 + phase) * 1)
+        return x, y
+
+    def _float_offset(self, key: str):
+        phase = self.entity_phase.get(key, 0.0)
+        y = int(math.sin(self.anim_time * 2 + phase) * 3) - 2
+        return 0, y
+
+    def _blit_sprite(self, key: str, tile_x: int, tile_y: int, extra=(0, 0)):
+        surf = self.surfaces.get(key)
+        if not surf:
+            return
+        ox, oy = self.sprite_offsets.get(key, (0, 0))
+        ex, ey = extra
+        px = tile_x * self.config.TILE_SIZE + ox + ex
+        py = tile_y * self.config.TILE_SIZE + oy + ey
+        self.screen.blit(surf, (px, py))
+
+    def _blit_sprite_px(self, key: str, px: int, py: int, extra=(0, 0)):
+        surf = self.surfaces.get(key)
+        if not surf:
+            return
+        ox, oy = self.sprite_offsets.get(key, (0, 0))
+        ex, ey = extra
+        self.screen.blit(surf, (px + ox + ex, py + oy + ey))
+
+    def _anim_key(self, base: str, moving: bool = False):
+        alt = f"{base}_alt"
+        if alt in self.surfaces:
+            if moving:
+                return alt if int(self.anim_time * 2) % 2 == 1 else base
+            return base
+        return base
+
+    def _wrap_text(self, text: str, max_chars: int):
+        words = text.split()
+        lines = []
+        current = []
+        for w in words:
+            if len(" ".join(current + [w])) <= max_chars:
+                current.append(w)
+            else:
+                lines.append(" ".join(current))
+                current = [w]
+        if current:
+            lines.append(" ".join(current))
+        return lines
+
+    def _wrap_text_px(self, text: str, max_width_px: int):
+        """Word-wrap using pixel width (prevents clipping)."""
+        words = text.split()
+        if not words:
+            return [""]
+        lines = []
+        cur = words[0]
+        for w in words[1:]:
+            candidate = f"{cur} {w}"
+            if self.font.size(candidate)[0] <= max_width_px:
+                cur = candidate
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+        return lines
+
+    def _quest_progress(self):
+        steps = self._quest_step_states()
+        done = sum(1 for _, ok in steps if ok)
+        total = len(steps)
+        return done, total, f"{done}/{total} steps"
+
+    def _quest_steps(self):
+        steps = []
+        if self.quest_type == "cure":
+            steps = [
+                ("Find ingredients", len(self.items_collected) >= len(self.items)),
+                ("Mix potion", self.mixed_potion),
+                ("Heal NPC", self.npc_healed),
+            ]
+        elif self.quest_type == "key_and_door":
+            steps = [
+                ("Open the chest", self.chest_opened),
+                ("Pick up the key", self.key_collected),
+                ("Unlock the door", self.door_opened),
+            ]
+        elif self.quest_type == "lost_item":
+            steps = [
+                ("Find the lost item", self.lost_item_found),
+                ("Return to NPC", self.game_won),
+            ]
+        else:
+            steps = [
+                ("Collect items", len(self.items_collected) >= len(self.items)),
+                ("Talk to NPC", self.game_won),
+            ]
+        return [("✓ " if done else "→ ") + label for label, done in steps]
+
+    def _quest_step_states(self):
+        npc_name = self.game.get("npc", {}).get("name", "NPC")
+        if self.quest_type == "cure":
+            return [
+                (f"Talk to {npc_name}", self.talked_to_npc),
+                ("Gather ingredients", len(self.items_collected) >= len(self.items)),
+                ("Brew the remedy", self.mixed_potion),
+                ("Deliver the remedy", self.potion_given or self.npc_healed),
+                ("See them recover", self.npc_healed),
+            ]
+        if self.quest_type == "key_and_door":
+            return [
+                (f"Talk to {npc_name}", self.talked_to_npc),
+                ("Open the chest", self.chest_opened),
+                ("Pick up the key", self.key_collected),
+                ("Unlock the door", self.door_opened),
+                ("Step through", self.game_won),
+            ]
+        if self.quest_type == "lost_item":
+            return [
+                (f"Talk to {npc_name}", self.talked_to_npc),
+                ("Search the area", self.lost_item_found),
+                ("Return the item", self.game_won),
+            ]
+        if self.quest_type == "repair_bridge":
+            return [
+                (f"Talk to {npc_name}", self.talked_to_npc),
+                ("Buy planks, rope, nails", self.has_materials()),
+                ("Repair the bridge", getattr(self, "bridge_repaired", False)),
+                ("Cross to the far side", self.game_won),
+            ]
+        return [
+            (f"Talk to {npc_name}", self.talked_to_npc),
+            ("Complete the objective", self.game_won),
+        ]
+
+    def _quest_summary(self):
+        goal = self.quest.get("goal", "Complete the quest") if hasattr(self, "quest") else "Complete the quest"
+        steps = self.quest.get("steps", []) if hasattr(self, "quest") else []
+        if not steps:
+            steps = [s.replace("✓ ", "").replace("→ ", "") for s in self._quest_steps()]
+        short_steps = "; ".join(steps[:3])
+        next_step = self._next_step_label()
+        if short_steps:
+            return f"Quest: {goal}. Steps: {short_steps}. Next: {next_step}."
+        return f"Quest: {goal}. Next: {next_step}."
+
+    def _next_step_label(self):
+        for label, done in self._quest_step_states():
+            if not done:
+                return label
+        return "Quest complete"
+
+    def _level_complete(self):
+        if self.level_index < len(self.levels) - 1:
+            self.msg(f"Level {self.level_index + 1} complete! Press N for next level.")
+        else:
+            self.msg("All levels complete! Press R to replay.")
+    
+    def run(self):
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+                    elif event.key == pygame.K_r:
+                        if self.game_won and self.level_index == len(self.levels) - 1:
+                            # Replay the same generated 1-3 levels
+                            self.load_level(0)
+                        else:
+                            self.reset_game()
+                            self.terrain.generate_layout()
+                            self.msg("Restarted!")
+                    elif event.key in (pygame.K_n, pygame.K_RETURN):
+                        if self.game_won and self.level_index < len(self.levels) - 1:
+                            self.load_level(self.level_index + 1)
+                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                        # Buy items while inside a building.
+                        if self.scene == "indoor" and self.current_building:
+                            # Only allow buying near the indoor NPC/counter.
+                            nx, ny = self.current_building["npc_pos"]
+                            ts = self.config.TILE_SIZE
+                            px = int((self.player_x + ts//2) // ts)
+                            py = int((self.player_y + ts//2) // ts)
+                            if abs(nx - px) <= 2 and abs(ny - py) <= 2:
+                                idx = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2}[event.key]
+                                self.buy_good(idx)
+                    elif event.key == pygame.K_SPACE or event.key == pygame.K_e:
+                        self.interact()
+            
+            keys = pygame.key.get_pressed()
+            dx = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
+            dy = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
+            self.move(dx * self.config.PLAYER_SPEED, dy * self.config.PLAYER_SPEED)
+            if not self.game_won:
+                self.check_pickups()
+            
+            self.effects.update()
+            self.anim_time += self.config.ANIM_SPEED
+            if self.message_timer > 0:
+                self.message_timer -= 1
+            
+            self.draw()
+            self.clock.tick(60)
+        
+        pygame.quit()
+    
+    def move(self, dx, dy):
+        ts = self.config.TILE_SIZE
+        mw = self.config.MAP_WIDTH * ts
+        mh = self.config.MAP_HEIGHT * ts
+        self.is_moving = dx != 0 or dy != 0
+        
+        new_x = self.player_x + dx
+        if 0 <= new_x < mw - ts:
+            tile_x = int((new_x + ts//2) // ts)
+            tile_y = int((self.player_y + ts//2) // ts)
+            if (tile_x, tile_y) not in self.solid:
+                self.player_x = new_x
+        
+        new_y = self.player_y + dy
+        if 0 <= new_y < mh - ts:
+            tile_x = int((self.player_x + ts//2) // ts)
+            tile_y = int((new_y + ts//2) // ts)
+            if (tile_x, tile_y) not in self.solid:
+                self.player_y = new_y
+
+    def has_materials(self) -> bool:
+        needed = {"planks", "rope", "nails"}
+        return needed.issubset(set(self.items_collected))
+
+    def buy_good(self, idx: int):
+        if not self.current_building:
+            return
+        goods = self.current_building.get("goods", [])
+        if idx < 0 or idx >= len(goods):
+            return
+        g = goods[idx]
+        item_id = g["id"]
+        if item_id in self.items_collected:
+            self.msg(f"Already bought {g['name']}.")
+            return
+        price = int(g.get("price", 0))
+        if self.money < price:
+            self.msg(f"Not enough gold. Need {price}g, you have {self.money}g.")
+            return
+        self.money -= price
+        self.items_collected.add(item_id)
+        self.inventory.append(g["name"])
+        self.effects.pickup(self.player_x + self.config.TILE_SIZE // 2, self.player_y + self.config.TILE_SIZE // 2)
+        self.msg(f"Bought {g['name']} for {price}g. Gold left: {self.money}g.")
+    
+    def check_pickups(self):
+        ts = self.config.TILE_SIZE
+        px = int((self.player_x + ts//2) // ts)
+        py = int((self.player_y + ts//2) // ts)
+        
+        if self.scene == "outdoor":
+            active_items = self.items
+        else:
+            active_items = self.current_building.get("items", []) if self.current_building else []
+        for item in active_items:
+            if item["id"] in self.items_collected:
+                continue
+            if item["x"] == px and item["y"] == py:
+                self.items_collected.add(item["id"])
+                self.inventory.append(item["name"])
+                self.effects.pickup(self.player_x + ts//2, self.player_y + ts//2)
+                if self.quest_type == "lost_item":
+                    self.lost_item_found = True
+                if self.quest_type == "cure" and len(self.items_collected) >= len(self.items):
+                    self.msg("All ingredients found! Mix at the cauldron.")
+                else:
+                    self.msg(f"Found {item['name']}!")
+
+        # Key pickup (for key_and_door quest)
+        if self.quest_type == "key_and_door" and self.key_spawned and not self.key_collected and self.key_pos:
+            if self.key_pos[0] == px and self.key_pos[1] == py:
+                self.key_collected = True
+                key_name = self.key.get("name", "Key") if self.key else "Key"
+                self.inventory.append(key_name)
+                self.effects.pickup(self.player_x + ts//2, self.player_y + ts//2)
+                self.msg(f"Picked up {key_name}!")
+    
+    def interact(self):
+        ts = self.config.TILE_SIZE
+        px = int((self.player_x + ts//2) // ts)
+        py = int((self.player_y + ts//2) // ts)
+
+        # Building transitions
+        if self.scene == "outdoor":
+            for b in self.buildings:
+                ex, ey = b["entrance"]
+                if abs(ex - px) <= 1 and abs(ey - py) <= 1:
+                    self.current_building = b
+                    self.interior = InteriorRenderer(self.config, theme=b["theme"], door_x=b["exit"][0])
+                    self.solid_indoor = self.interior.get_solid_tiles()
+                    nx, ny = b["npc_pos"]
+                    self.solid_indoor.add((nx, ny))
+
+                    self.scene = "indoor"
+                    self.solid = self.solid_indoor
+                    exit_x, exit_y = b["exit"]
+                    self.player_x = exit_x * ts
+                    self.player_y = (exit_y - 2) * ts
+                    self.msg(f"Entered {b['name']}. (SPACE near the door to exit)")
+                    if b.get("goods"):
+                        gtxt = ", ".join([f"{i+1}:{g['name']}({g['price']}g)" for i, g in enumerate(b["goods"][:3])])
+                        self.msg(f"Entered {b['name']}. Buy: {gtxt}. Gold: {self.money}g.")
+                    return
+        else:
+            ex, ey = self.current_building["exit"] if self.current_building else (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 2)
+            if abs(ex - px) <= 1 and abs(ey - py) <= 1:
+                self.scene = "outdoor"
+                self.solid = self.solid_outdoor
+                ox, oy = self.current_building["entrance"] if self.current_building else (3, self.config.MAP_HEIGHT // 2)
+                self.player_x = ox * ts
+                self.player_y = (oy + 1) * ts
+                self.msg("Back outside.")
+                return
+
+            # Indoor NPC dialogue
+            if self.current_building:
+                nx, ny = self.current_building["npc_pos"]
+                if abs(nx - px) <= 1 and abs(ny - py) <= 1:
+                    who = self.current_building.get("npc", "NPC")
+                    line = self.current_building.get("dialogue", "Hello!")
+                    self.msg(f'{who}: "{line}"')
+                    return
+        
+        npc = self.game["npc"]
+        if abs(npc["x"] - px) <= 1 and abs(npc["y"] - py) <= 1:
+            if self.quest_type == "cure":
+                if self.npc_healed:
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Thank you!")}"')
+                elif self.mixed_potion:
+                    self.potion_given = True
+                    self.npc_healed = True
+                    self.game_won = True
+                    self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "I feel better!")}"')
+                    self._level_complete()
+                elif len(self.items_collected) >= len(self.items):
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_progress", "Mix the potion at the cauldron!")}"')
+                elif self.talked_to_npc:
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_hint", "Please find the ingredients...")}"')
+                else:
+                    self.talked_to_npc = True
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_intro", "I'm not feeling well...")}"')
+            elif self.quest_type == "lost_item":
+                if self.game_won:
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Thank you!")}"')
+                elif self.lost_item_found:
+                    self.game_won = True
+                    self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "You found it!")}"')
+                    self._level_complete()
+                elif self.talked_to_npc:
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_hint", "Have you seen it?")}"')
+                else:
+                    self.talked_to_npc = True
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_intro", "I lost something...")}"')
+            else:
+                if self.game_won:
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Well done!")}"')
+                elif self.talked_to_npc:
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_hint", "Try the chest.")}"')
+                else:
+                    self.talked_to_npc = True
+                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_intro", "There's a key hidden nearby.")}"')
+            if not self.quest_known:
+                self.quest_known = True
+                summary = self._quest_summary()
+                if "Steps:" in summary:
+                    parts = summary.split("Steps:", 1)
+                    msg = f"{parts[0].strip()}\nSteps: {parts[1].strip()}"
+                else:
+                    msg = summary
+                self.msg(msg[:150])
+            return
+
+        # Bridge interaction (repair_bridge quest)
+        if self.quest_type == "repair_bridge" and self.bridge_tiles:
+            # If you're adjacent to the bridge, you can repair it.
+            for bx, by in self.bridge_tiles:
+                if abs(bx - px) <= 1 and abs(by - py) <= 1:
+                    if self.bridge_repaired:
+                        self.msg("The bridge is sturdy now.")
+                        return
+                    if not self.has_materials():
+                        self.msg("You need planks, rope, and nails. Buy them at the Shop.")
+                        return
+                    # Consume materials
+                    for item_id in ["planks", "rope", "nails"]:
+                        self.items_collected.discard(item_id)
+                    self.bridge_repaired = True
+                    # Open the bridge tiles
+                    for t in self.bridge_tiles:
+                        self.solid_outdoor.discard(t)
+                    self.solid = self.solid_outdoor
+                    self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
+                    self.msg("Repaired the bridge! Cross to the far side.")
+                    return
+
+        # Mix station interaction (cure quest)
+        if self.quest_type == "cure" and self.mix_station:
+            if abs(self.mix_station["x"] - px) <= 1 and abs(self.mix_station["y"] - py) <= 1:
+                if self.mixed_potion:
+                    self.msg("The potion is ready.")
+                elif len(self.items_collected) >= len(self.items):
+                    self.mixed_potion = True
+                    self.inventory.append("Healing Potion")
+                    self.effects.smoke(self.mix_station["x"] * ts + ts//2, self.mix_station["y"] * ts + ts//2)
+                    self.msg("Quest update: potion mixed.")
+                else:
+                    self.msg("Need more ingredients.")
+                return
+
+        # Chest / Key / Door interactions (key_and_door quest)
+        if self.quest_type == "key_and_door" and self.chest:
+            if abs(self.chest["x"] - px) <= 1 and abs(self.chest["y"] - py) <= 1:
+                if not self.chest_opened:
+                    self.chest_opened = True
+                    self.key_spawned = True
+                    self.key_pos = (self.chest["x"], self.chest["y"])
+                    self.solid.discard((self.chest["x"], self.chest["y"]))
+                    self.effects.smoke(self.chest["x"] * ts + ts//2, self.chest["y"] * ts + ts//2)
+                    self.msg("Quest update: chest opened. A key appears.")
+                else:
+                    self.msg("The chest is empty.")
+                return
+
+        if self.quest_type == "key_and_door" and self.door:
+            if abs(self.door["x"] - px) <= 1 and abs(self.door["y"] - py) <= 1:
+                if self.door_opened:
+                    self.msg("The door is open.")
+                elif self.key_collected:
+                    self.door_opened = True
+                    self.game_won = True
+                    self.solid.discard((self.door["x"], self.door["y"]))
+                    self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
+                    self.msg("Quest update: door unlocked!")
+                    self._level_complete()
+                else:
+                    self.msg("The door is locked.")
+                return
+
+        self.msg("Nothing here... (SPACE to interact)")
+    
+    def msg(self, text):
+        self.message = text
+        self.message_timer = 250
+    
+    def draw(self):
+        ts = self.config.TILE_SIZE
+        map_w = self.config.MAP_WIDTH * ts
+        map_h = self.config.MAP_HEIGHT * ts
+        
+        # Draw terrain
+        if self.scene == "outdoor":
+            self.terrain.draw(self.screen, self.anim_time)
+        else:
+            self.interior.draw(self.screen, self.anim_time)
+
+        # Draw broken/repaired bridge (outdoor)
+        if self.scene == "outdoor" and self.bridge_tiles:
+            ts = self.config.TILE_SIZE
+            for bx, by in self.bridge_tiles:
+                x = bx * ts
+                y = by * ts
+                if self.bridge_repaired:
+                    pygame.draw.rect(self.screen, (140, 100, 70), (x, y + ts//2 - 10, ts, 20))
+                    pygame.draw.line(self.screen, (110, 80, 55), (x + 8, y + ts//2 - 8), (x + ts - 8, y + ts//2 - 8), 3)
+                    pygame.draw.line(self.screen, (110, 80, 55), (x + 8, y + ts//2 + 8), (x + ts - 8, y + ts//2 + 8), 3)
+                else:
+                    pygame.draw.rect(self.screen, (90, 70, 60), (x, y + ts//2 - 10, ts, 20))
+                    pygame.draw.rect(self.screen, (60, 50, 45), (x + ts//2 - 12, y + ts//2 - 12, 24, 24), border_radius=4)
+        
+        # Draw items (outdoor pickups)
+        for i, item in enumerate(self.items):
+            if item["id"] in self.items_collected:
+                continue
+            sprite_key = "item" if i == 0 else "item2" if i == 1 else "item"
+            ox, oy = self._float_offset(item["id"])
+            if self.scene == "outdoor":
+                self._blit_sprite(sprite_key, item["x"], item["y"], (ox, oy))
+
+        # Indoor shop displays (visual only; buying happens via keys)
+        if self.scene == "indoor" and self.current_building:
+            goods = self.current_building.get("goods", [])
+            # Draw 2-3 goods as floating icons near the shelves
+            for gi, g in enumerate(goods[:3]):
+                gx = self.config.MAP_WIDTH // 2 - 3 + gi * 2
+                gy = 6
+                ox, oy = self._float_offset(g["id"])
+                self._blit_sprite("item", gx, gy, (ox, oy))
+
+        # Draw key (for key_and_door quest)
+        if self.quest_type == "key_and_door" and self.key_spawned and not self.key_collected and self.key_pos:
+            ox, oy = self._float_offset("key")
+            self._blit_sprite("key", self.key_pos[0], self.key_pos[1], (ox, oy))
+        
+        # Draw chest
+        if self.chest and not self.chest_opened:
+            self._blit_sprite("chest", self.chest["x"], self.chest["y"])
+
+        # Draw door
+        if self.door and not self.door_opened:
+            self._blit_sprite("door", self.door["x"], self.door["y"])
+
+        # Draw mix station
+        if self.mix_station:
+            self._blit_sprite("mix_station", self.mix_station["x"], self.mix_station["y"])
+
+        # Draw building entrance markers (outdoor)
+        if self.scene == "outdoor":
+            for i, b in enumerate(self.buildings):
+                ex, ey = b["entrance"]
+                cx = ex * ts + ts // 2
+                cy = ey * ts + ts // 2
+                # Simple building sprite (2.5 tiles wide, 2 tiles tall) with a door on the entrance tile.
+                w = int(ts * 2.6)
+                h = int(ts * 2.0)
+                x0 = cx - w // 2
+                y0 = cy - h + ts // 2
+                roof = (150, 70, 60) if b["theme"] == "shop" else (120, 80, 140)
+                wall = (110, 95, 80) if b["theme"] == "shop" else (105, 95, 115)
+                pygame.draw.rect(self.screen, roof, (x0, y0, w, ts), border_radius=8)
+                pygame.draw.rect(self.screen, wall, (x0 + 8, y0 + ts - 6, w - 16, h - ts + 6), border_radius=8)
+                # Door
+                pygame.draw.rect(self.screen, (80, 55, 40), (cx - 16, cy - 18, 32, 40), border_radius=6)
+                pygame.draw.circle(self.screen, (240, 210, 80), (cx + 10, cy + 2), 3)
+                # Sign
+                pygame.draw.rect(self.screen, (90, 60, 40), (x0 + 18, y0 + ts + 10, 44, 16), border_radius=3)
+                label = "SHOP" if b["theme"] == "shop" else "INN"
+                self.screen.blit(self.font.render(label, True, (240, 240, 240)), (x0 + 22, y0 + ts + 10))
+        
+        # Draw NPC
+        npc = self.game["npc"]
+        npc_base = "npc_healed" if self.npc_healed and self.surfaces.get("npc_healed") else "npc"
+        ox, oy = self._entity_bob("npc")
+        if self.scene == "outdoor":
+            self._blit_sprite(npc_base, npc["x"], npc["y"], (ox, oy))
+        else:
+            # Indoor NPC uses per-building unique sprite (generated at level creation).
+            if self.current_building:
+                nx, ny = self.current_building["npc_pos"]
+                key = self.current_building.get("npc_sprite_key", "npc")
+                if key not in self.surfaces:
+                    key = "npc"
+                self._blit_sprite(key, nx, ny, (0, 0))
+        
+        # Draw player
+        moving = getattr(self, "is_moving", False)
+        ox, oy = self._entity_bob("player", moving=moving)
+        self._blit_sprite_px("player", self.player_x, self.player_y, (ox, oy))
+        
+        # Effects
+        self.effects.draw(self.screen)
+
+        # Quest log (pinned)
+        self.draw_quest_log(map_w)
+        
+        # UI Panel
+        self.draw_ui(map_w)
+        
+        # Message box
+        if self.message_timer > 0 and self.message:
+            padding_x = 22
+            max_text_w = (map_w - 24) - (padding_x * 2)
+
+            raw_lines = self.message.split("\n")
+            lines = []
+            for raw in raw_lines:
+                if raw.strip() == "":
+                    continue
+                lines.extend(self._wrap_text_px(raw, max_text_w))
+            lines = lines[:4]
+            box_h = 36 + 22 * len(lines)
+            box_y = map_h - box_h - 12
+            box_w = map_w - 24
+            
+            s = pygame.Surface((box_w, box_h))
+            s.fill((20, 20, 35))
+            s.set_alpha(235)
+            self.screen.blit(s, (12, box_y))
+            pygame.draw.rect(self.screen, (100, 100, 140), (12, box_y, box_w, box_h), 3, border_radius=5)
+            
+            for i, line in enumerate(lines):
+                text = self.font.render(line, True, (255, 255, 255))
+                self.screen.blit(text, (padding_x, box_y + 10 + i * 22))
+        
+        pygame.display.flip()
+
+    def draw_quest_log(self, map_w):
+        x = 12
+        y = 12
+        w = min(360, map_w - 24)
+        lines = []
+        if not getattr(self, "quest_known", True):
+            lines.append("Talk to the NPC to learn your quest.")
+        else:
+            goal = self.quest.get("goal", "Complete the quest") if hasattr(self, "quest") else "Complete the quest"
+            lines.append(f"Goal: {goal}")
+            for label, done in self._quest_step_states()[:4]:
+                lines.append(("✓ " if done else "→ ") + label)
+            lines.append("Next: " + self._next_step_label())
+        h = 28 + 18 * len(lines) + 12
+
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((15, 15, 25, 210))
+        self.screen.blit(panel, (x, y))
+        pygame.draw.rect(self.screen, (90, 90, 120), (x, y, w, h), 2, border_radius=4)
+
+        self.screen.blit(self.font_large.render("QUEST LOG", True, (200, 200, 255)), (x + 10, y + 6))
+        ty = y + 30
+        for line in lines:
+            self.screen.blit(self.font.render(line[:40], True, (220, 220, 220)), (x + 10, ty))
+            ty += 18
+    
+    def draw_ui(self, panel_x):
+        panel_w = self.config.GAME_WIDTH - panel_x
+        
+        pygame.draw.rect(self.screen, (25, 25, 40), (panel_x, 0, panel_w, self.config.GAME_HEIGHT))
+        pygame.draw.line(self.screen, (60, 60, 90), (panel_x, 0), (panel_x, self.config.GAME_HEIGHT), 3)
+        
+        x = panel_x + 15
+        y = 20
+        
+        # Title
+        title = self.font_title.render(self.game.get("title", "Quest")[:16], True, (255, 215, 0))
+        self.screen.blit(title, (x, y))
+        y += 34
+        level_text = self.font.render(f"Level {self.level_index + 1}/{len(self.levels)}", True, (180, 180, 200))
+        self.screen.blit(level_text, (x, y))
+        y += 24
+        
+        # Progress
+        done, total, progress_label = self._quest_progress()
+        self.screen.blit(self.font_large.render("PROGRESS", True, (150, 200, 255)), (x, y))
+        y += 30
+        
+        # Progress bar
+        bar_w = panel_w - 30
+        pygame.draw.rect(self.screen, (50, 50, 70), (x, y, bar_w, 20), border_radius=4)
+        if total > 0:
+            fill_w = int(bar_w * (done / total))
+            if fill_w > 0:
+                pygame.draw.rect(self.screen, (100, 200, 100), (x, y, fill_w, 20), border_radius=4)
+        progress_text = self.font.render(progress_label, True, (255, 255, 255))
+        self.screen.blit(progress_text, (x + 5, y + 2))
+        y += 40
+        
+        # Inventory
+        self.screen.blit(self.font_large.render("INVENTORY", True, (255, 200, 100)), (x, y))
+        y += 28
+        
+        if self.inventory:
+            for item_name in self.inventory[:5]:
+                self.screen.blit(self.font.render(f"✓ {item_name[:14]}", True, (150, 255, 150)), (x, y))
+                y += 22
+        else:
+            self.screen.blit(self.font.render("(empty)", True, (100, 100, 120)), (x, y))
+        
+        y += 20
+
+        # Money
+        self.screen.blit(self.font_large.render("GOLD", True, (255, 230, 120)), (x, y))
+        y += 24
+        self.screen.blit(self.font.render(f"{getattr(self, 'money', 0)}g", True, (255, 230, 120)), (x, y))
+        y += 26
+        
+        # Goal
+        self.screen.blit(self.font_large.render("QUEST", True, (255, 150, 150)), (x, y))
+        y += 26
+        if not getattr(self, "quest_known", True):
+            self.screen.blit(self.font.render("→ Talk to the NPC", True, (220, 220, 220)), (x, y))
+            y += 20
+        else:
+            goal_text = self.quest.get("goal", "Complete the quest") if hasattr(self, "quest") else "Complete the quest"
+            self.screen.blit(self.font.render(goal_text[:26], True, (220, 220, 220)), (x, y))
+            y += 22
+            for line in self._quest_steps()[:4]:
+                self.screen.blit(self.font.render(line[:28], True, (200, 200, 200)), (x, y))
+                y += 20
+        
+        # Controls
+        y = self.config.GAME_HEIGHT - 140
+        self.screen.blit(self.font_large.render("CONTROLS", True, (100, 180, 255)), (x, y))
+        y += 25
+        controls = ["WASD - Move", "SPACE - Interact", "1-3 - Buy (Indoor)", "N/ENTER - Next Level", "R - Restart", "ESC - Quit"]
+        for ctrl in controls:
+            self.screen.blit(self.font.render(ctrl, True, (120, 120, 150)), (x, y))
+            y += 20
+
+
+# ============================================================
+# WEB INTERFACE
+# ============================================================
+
+app = Flask(__name__)
+config = Config()
+
+HTML = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🎮 Game Generator v7</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh; color: white; padding: 20px;
+        }
+        .container { max-width: 700px; margin: 0 auto; }
+        h1 {
+            text-align: center; font-size: 2.2em; margin-bottom: 8px;
+            background: linear-gradient(90deg, #4ade80, #22d3ee);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .subtitle { text-align: center; color: #888; margin-bottom: 25px; }
+        .card {
+            background: rgba(255,255,255,0.06); border-radius: 12px;
+            padding: 20px; margin-bottom: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        label { display: block; margin-bottom: 8px; color: #4ade80; font-weight: bold; }
+        input, textarea {
+            width: 100%; padding: 12px; border: 2px solid #333;
+            border-radius: 8px; background: #0f0f23; color: white; font-size: 15px;
+        }
+        input:focus, textarea:focus { border-color: #4ade80; outline: none; }
+        textarea { height: 80px; resize: none; }
+        button {
+            width: 100%; padding: 14px; font-size: 18px; font-weight: bold;
+            border: none; border-radius: 8px; cursor: pointer;
+            background: linear-gradient(90deg, #4ade80, #22d3ee); color: #1a1a2e;
+        }
+        button:hover { transform: scale(1.02); }
+        button:disabled { background: #444; color: #888; transform: none; }
+        .status { text-align: center; padding: 15px; font-size: 16px; }
+        .examples { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+        .ex-btn {
+            padding: 8px 12px; font-size: 13px; width: auto;
+            background: rgba(74, 222, 128, 0.15); border: 1px solid #4ade80; color: #4ade80;
+        }
+        .rand-btn {
+            margin-top: 8px;
+            padding: 10px 12px;
+            font-size: 14px;
+            width: 100%;
+            background: rgba(34, 211, 238, 0.2);
+            border: 1px solid #22d3ee;
+            color: #22d3ee;
+        }
+        .levels {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 10px;
+        }
+        .levels input {
+            width: 80px;
+            text-align: center;
+        }
+        .tag { background: #4ade80; color: #1a1a2e; padding: 3px 10px; border-radius: 4px; font-size: 12px; }
+        .features { font-size: 14px; color: #aaa; line-height: 1.8; }
+        .features b { color: #4ade80; }
+        a { color: #22d3ee; }
+        .spinner {
+            display: inline-block; width: 18px; height: 18px;
+            border: 3px solid #fff; border-top-color: transparent;
+            border-radius: 50%; animation: spin 1s linear infinite; margin-right: 10px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .new { color: #22d3ee; font-size: 11px; margin-left: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Game Generator v7</h1>
+        <p class="subtitle">Clean Pokemon-Style Graphics <span class="tag">NEW</span></p>
+        
+        <div class="card">
+            <label>🔑 OpenAI API Key</label>
+            <input type="password" id="apiKey" placeholder="sk-...">
+            <small style="color:#666">Get key: <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a></small>
+        </div>
+        
+        <div class="card">
+            <label>✨ Describe Your World</label>
+            <textarea id="prompt" placeholder="A peaceful forest village with a friendly wizard and hidden treasures..."></textarea>
+            <div class="examples">
+                <button class="ex-btn" onclick="setEx('A sunny beach with seashells to collect and a friendly crab')">🏖️ Beach</button>
+                <button class="ex-btn" onclick="setEx('A magical forest at dawn with glowing mushrooms and fairy dust')">🌲 Forest</button>
+                <button class="ex-btn" onclick="setEx('A snowy mountain village with lost mittens and a kind yeti')">❄️ Snow</button>
+                <button class="ex-btn" onclick="setEx('A moonlit garden with fireflies and hidden gems')">🌙 Night</button>
+            </div>
+            <button class="rand-btn" onclick="randomPrompt()">🎲 Generate Random Prompt</button>
+            <div class="levels">
+                <label style="margin:0; color:#22d3ee;">Levels</label>
+                <input type="number" id="levels" min="1" max="6" value="3">
+                <span style="color:#888; font-size:12px;">(1-6)</span>
+            </div>
+        </div>
+        
+        <button id="btn" onclick="generate()">🌟 Generate World!</button>
+        <div id="status" class="status" style="display:none;"></div>
+        
+        <div class="card features">
+            <b>✨ v7 - Clean & Simple:</b><br>
+            • High‑quality 32‑bit pixel art style<span class="new">NEW</span><br>
+            • Varied quests per level<span class="new">NEW</span><br>
+            • Richer environments + decor<span class="new">NEW</span><br>
+            • Day/night based on your prompt<br>
+            • Peaceful exploration (no combat)<br>
+        </div>
+    </div>
+    
+    <script>
+        function setEx(t) { document.getElementById('prompt').value = t; }
+        function randomPrompt() {
+            const places = [
+                "a cozy hillside village", "a misty forest shrine", "a sunny seaside town",
+                "a quiet desert oasis", "a snow‑covered mountain hamlet", "a castle courtyard"
+            ];
+            const times = ["at dawn", "at sunset", "under a clear night sky", "in the early morning", "during a warm afternoon"];
+            const heroes = [
+                "a red‑scarf alchemist’s apprentice", "a green‑cloaked ranger",
+                "a sailor‑adventurer with a brass compass", "a traveling bard with a lute",
+                "a young mage with a star brooch"
+            ];
+            const npcs = [
+                "a gentle healer", "a shrine keeper", "a friendly innkeeper",
+                "a wise librarian", "a village guard captain"
+            ];
+            const hooks = [
+                "gather three rare ingredients to brew a remedy",
+                "recover a lost heirloom hidden nearby",
+                "unlock an ancient gate with a hidden key",
+                "deliver a sealed message to restore peace",
+                "collect festival supplies scattered around"
+            ];
+            const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+            const prompt = `${pick(places)} ${pick(times)}. The hero is ${pick(heroes)}. The NPC is ${pick(npcs)}. The quest is to ${pick(hooks)}.`;
+            document.getElementById('prompt').value = prompt;
+        }
+        async function generate() {
+            const key = document.getElementById('apiKey').value;
+            const prompt = document.getElementById('prompt').value;
+            const levels = parseInt(document.getElementById('levels').value || '3', 10);
+            if (!key) return alert('Enter API key!');
+            if (!prompt) return alert('Describe your world!');
+            document.getElementById('btn').disabled = true;
+            const status = document.getElementById('status');
+            status.style.display = 'block';
+            status.innerHTML = '<span class="spinner"></span> Generating world (20-30 sec)...';
+            try {
+                const res = await fetch('/generate', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels})
+                });
+                const data = await res.json();
+                status.innerHTML = data.success ? '✅ Done! Go to terminal and press ENTER!' : '❌ ' + data.error;
+            } catch (e) { status.innerHTML = '❌ ' + e.message; }
+            document.getElementById('btn').disabled = false;
+        }
+    </script>
+</body>
+</html>
+'''
+
+pending_game = {"ready": False, "levels": []}
+
+@app.route('/')
+def index():
+    return render_template_string(HTML)
+
+@app.route('/generate', methods=['POST'])
+def generate():
+    global pending_game
+    try:
+        data = request.json
+        config.OPENAI_API_KEY = data['apiKey']
+        
+        client = OpenAIClient(config.OPENAI_API_KEY)
+        
+        print("\n" + "="*50)
+        print("GAME GENERATOR v7 - Pokemon Style!")
+        print("="*50)
+        
+        print("\n[1/2] Designing worlds...")
+        designer = GameDesigner(client)
+        levels = []
+        level_count = int(data.get("levels", 3))
+        level_count = max(1, min(6, level_count))
+
+        # Pick quest types: if the user prompt implies a goal, use it for level 1.
+        base_types = list(ALLOWED_GOALS)
+        first = infer_goal_from_prompt(data.get("prompt", ""))
+        quest_types = []
+        if first in base_types:
+            quest_types.append(first)
+        remaining = [t for t in base_types if t not in quest_types]
+        while len(quest_types) < level_count:
+            if not remaining:
+                remaining = list(base_types)
+            random.shuffle(remaining)
+            while remaining and len(quest_types) < level_count:
+                t = remaining.pop()
+                # Avoid repeats until we've exhausted the pool.
+                if t not in quest_types or len(quest_types) >= len(base_types):
+                    quest_types.append(t)
+
+        base_player = None
+        base_player_sprite = None
+
+        for i in range(level_count):
+            level_prompt = data['prompt'] if i == 0 else f"{data['prompt']} -- New area {i+1} with different terrain, new NPC, and a new quest."
+            game = designer.design_game(level_prompt, quest_type_override=quest_types[i])
+            if base_player is None:
+                base_player = game["player"]
+            else:
+                game["player"] = base_player
+            print(f"Level {i+1} Title: {game.get('title')}")
+            print(f"Time: {game.get('time_of_day', 'day')}")
+            print(f"Terrain: {game.get('terrain', {}).get('type', 'meadow')}")
+            
+            print("\n[2/2] Generating sprites...")
+            sprites = SpriteGenerator(client, config.API_DELAY).generate_all(game, reuse_player_sprite=base_player_sprite)
+            if base_player_sprite is None:
+                base_player_sprite = sprites.get("player")
+            levels.append({"game": game, "sprites": sprites})
+        
+        pending_game = {"ready": True, "levels": levels}
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)})
+
+
+def main():
+    import webbrowser
+    import threading
+    
+    print("""
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║          🎮 PromptQuest: AI Pixel Adventure 🎮                ║
+    ╠═══════════════════════════════════════════════════════════════╣
+    ║                                                               ║
+    ║  WHAT THIS IS:                                                ║
+    ║  • Prompt → generates setting, characters, items, and quests   ║
+    ║  • You explore a top-down map and complete objectives          ║
+    ║  • Multi-level run: each level gets a different goal type      ║
+    ║                                                               ║
+    ║  HOW TO PLAY:                                                 ║
+    ║  1. Browser → paste API key → describe your world             ║
+    ║  2. Wait 20-30 seconds                                        ║
+    ║  3. Press ENTER here → play!                                  ║
+    ║                                                               ║
+    ║  GOAL: Complete the quest shown in the UI                     ║
+    ║                                                               ║
+    ╚═══════════════════════════════════════════════════════════════╝
+    """)
+    
+    def run_flask():
+        import logging
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
+        app.run(debug=False, port=5000, threaded=True, use_reloader=False)
+    
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    webbrowser.open('http://127.0.0.1:5000')
+    
+    print("\n⏳ Waiting for you to generate a world...")
+    print("   (Press Ctrl+C to quit)\n")
+    
+    while True:
+        try:
+            if pending_game["ready"]:
+                print("\n" + "="*50)
+                print("🌟 WORLD READY! Press ENTER to explore...")
+                print("="*50)
+                input()
+                
+                levels = pending_game["levels"]
+                pending_game["ready"] = False
+                
+                engine = GameEngine(levels, config)
+                engine.run()
+                
+                print("\n✨ Thanks for playing!")
+                print("⏳ Generate another world, or Ctrl+C to quit...\n")
+            
+            time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            break
+
+
+if __name__ == "__main__":
+    main()

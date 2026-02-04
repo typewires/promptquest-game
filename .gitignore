@@ -1,0 +1,22 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# If you later add a JS frontend build:
+node_modules/
+dist/
+.next/
+.DS_Store
+__pycache__/
+*.pyc
+.env
+
+# Virtualenvs
+.venv/
+game_env/
+game_env312/
+
+# Generated artifacts
+generated_sprites/
