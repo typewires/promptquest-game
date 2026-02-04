@@ -95,6 +95,31 @@ Later levels are **not free-form “invented” by the AI**. Instead:
 - Code selects a goal type for each level (using the rules above).
 - The AI generates the level’s **content** consistent with that selected goal type (NPC flavor, items, dialogue, look).
 
+## Cost / Quality Settings
+The generator UI has a **Quality** dropdown:
+- **Low (cheapest)**: `TEXT_MODEL=gpt-4o-mini`, `IMAGE_MODEL=gpt-image-1` with `quality=low`
+- **Medium (default)**: `TEXT_MODEL=gpt-4o-mini`, `IMAGE_MODEL=gpt-image-1` with `quality=medium`
+- **High (best)**: `TEXT_MODEL=gpt-4o`, `IMAGE_MODEL=gpt-image-1` with `quality=high`
+
+### What the dropdown actually changes
+- The dropdown is sent to the backend as `quality` in the `/generate` request.
+- The server sets:
+  - `Config.TEXT_MODEL` (for world/quest/dialogue JSON)
+  - `Config.IMAGE_QUALITY` (for `gpt-image-1` sprite generation)
+
+### Sprite reuse (fewer image calls)
+To reduce cost within a multi-level run:
+- The **player sprite** is reused across all levels (consistent protagonist).
+- The **shop** and **inn** NPC sprites are generated once and reused across levels.
+
+### Sprite caching (disk)
+Sprite images are cached on disk so reruns can be much cheaper.
+- Cache directory: `generated_sprites/`
+- Cache key includes: image model, image quality, sprite role, and the prompt text for that sprite.
+- If a cache hit exists, the game loads the `.png` from disk and skips the OpenAI image call.
+
+Note: `generated_sprites/` is ignored by git by default (it’s a local cache).
+
 ## Quest Types (Examples)
 Each level picks one quest type (varied across the run):
 - `cure`: Collect ingredients, mix a remedy, heal a sick NPC (the NPC sprite swaps to a “healed” version).
