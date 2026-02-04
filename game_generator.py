@@ -1308,11 +1308,11 @@ class SpriteGenerator:
 
 
 # ============================================================
-# TERRAIN RENDERER (Code-drawn, Pokemon style!)
+# TERRAIN RENDERER (Code-drawn, top-down pixel adventure style)
 # ============================================================
 
 class TerrainRenderer:
-    """Draws terrain like Pokemon - solid colors with simple shapes"""
+    """Draws top-down pixel-adventure terrain with simple shapes and palettes."""
     
     # Color palettes for different times/terrains
     PALETTES = {
@@ -3515,7 +3515,7 @@ def generate():
         client = OpenAIClient(config.OPENAI_API_KEY)
         
         print("\n" + "="*50)
-        print("GAME GENERATOR v7 - Pokemon Style!")
+        print("PROMPTQUEST - AI PIXEL ADVENTURE")
         print("="*50)
         
         print("\n[1/2] Designing worlds...")
