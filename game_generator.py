@@ -86,6 +86,12 @@ def _load_baked_sprite(key: str) -> Image.Image | None:
         return None
 
 
+def _looks_like_princess(npc: dict) -> bool:
+    name = str(npc.get("name", "")).lower()
+    desc = str(npc.get("sprite_desc", "")).lower()
+    return ("princess" in name) or ("princess" in desc)
+
+
 def parse_level_goal_overrides(prompt: str) -> dict[int, str]:
     """
     Parse prompt directives like:
@@ -1323,10 +1329,17 @@ class SpriteGenerator:
         if quest.get("type") == "cure":
             print("  Sick NPC...")
             # Use a dedicated sick sprite for clarity in-game.
-            sprites["npc_sick"] = self._gen(
-                game.get("npc", {}).get("sprite_desc", "sick fantasy NPC with pale skin and tired eyes"),
-                role="npc",
-                theme=theme
+            npc = game.get("npc", {}) or {}
+            baked_princess_sick = _load_baked_sprite("npc_princess_sick") if _looks_like_princess(npc) else None
+            baked_sick = _load_baked_sprite("npc_sick")
+            sprites["npc_sick"] = (
+                baked_princess_sick
+                if baked_princess_sick is not None
+                else (baked_sick if baked_sick is not None else self._gen(
+                    npc.get("sprite_desc", "sick fantasy NPC with pale skin and tired eyes"),
+                    role="npc",
+                    theme=theme
+                ))
             )
             time.sleep(self.delay)
 
@@ -1337,7 +1350,17 @@ class SpriteGenerator:
             time.sleep(self.delay)
 
             print("  Healed NPC...")
-            sprites["npc_healed"] = self._gen(quest.get("npc_healed_sprite_desc", "healthy smiling villager"), role="npc_healed", theme=theme)
+            baked_princess_healed = _load_baked_sprite("npc_princess_healed") if _looks_like_princess(npc) else None
+            baked_healed = _load_baked_sprite("npc_healed")
+            sprites["npc_healed"] = (
+                baked_princess_healed
+                if baked_princess_healed is not None
+                else (baked_healed if baked_healed is not None else self._gen(
+                    quest.get("npc_healed_sprite_desc", "healthy smiling villager"),
+                    role="npc_healed",
+                    theme=theme
+                ))
+            )
             time.sleep(self.delay)
 
         if quest.get("type") == "key_and_door":
@@ -3742,6 +3765,8 @@ def main():
         core = [
             ("npc_shop", "npc", "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood"),
             ("npc_inn", "npc", "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe"),
+            ("npc_princess_sick", "npc", "sick princess in elegant dress with crown, pale skin, tired eyes, slumped posture, wrapped in a blanket, clearly unwell"),
+            ("npc_princess_healed", "npc_healed", "healthy princess in elegant dress with crown, bright eyes, warm smile, confident posture, glowing healthy complexion"),
             ("chest", "chest", "treasure chest prop: wooden chest with metal bands and latch"),
             ("key", "key", "key item: ornate brass key with visible teeth and keyring hole"),
             ("door", "door", "door prop: heavy wooden door with iron bands and visible lock and handle"),

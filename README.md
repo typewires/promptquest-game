@@ -175,9 +175,10 @@ This project supports **baking** a small set of core sprites once at **High** qu
 If you fork this repo or make your own version, you can choose to bake your own core sprite set too. It’s optional—everything still works without baking (the game will just generate those sprites via the image API instead).
 
 ### What Gets Baked
-Exactly **10 PNGs + 1 manifest**:
+Exactly **12 PNGs + 1 manifest**:
 
 - NPCs: `assets/sprites/npc_shop.png`, `assets/sprites/npc_inn.png`
+- Princess cure pair: `assets/sprites/npc_princess_sick.png`, `assets/sprites/npc_princess_healed.png`
 - Props: `assets/sprites/chest.png`, `assets/sprites/key.png`, `assets/sprites/door.png`, `assets/sprites/mix_station.png`
 - Bridge materials: `assets/sprites/mat_planks.png`, `assets/sprites/mat_rope.png`, `assets/sprites/mat_nails.png`
 - Generic item icon: `assets/sprites/item_generic.png`
