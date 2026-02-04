@@ -15,7 +15,7 @@ Under the hood it’s a **Python** project:
 ## Project Focus
 PromptQuest is an AI-first **game generator** that produces a playable, self-contained mini‑adventure from a single prompt. The game you play is the output of the generator: a generated run with its own maps, quests, dialogue, and sprites.
 
-Early versions generated nearly everything via AI. To keep the project practical and affordable to run, the generator now “bakes” a small set of core sprites and reuses them, while continuing to generate the rest of the experience so that no two runs are exactly the same.
+Early versions generated nearly everything via AI. To keep the project practical and affordable to run, the generator now “bakes” a small set of core sprites and reuses them (including the **shopkeeper**, **innkeeper**, and the **princess sick/healed** cure pair), while continuing to generate the rest of the experience so that no two runs are exactly the same.
 
 ## Quick Start
 
@@ -63,7 +63,7 @@ This repo is the **generator**. When you press Generate, it produces a **new pla
 
 | Reuse vs new | What happens |
 | --- | --- |
-| Reused (to save cost) | Player sprite across levels, shopkeeper/innkeeper sprites across levels, plus baked core sprites if present |
+| Reused (to save cost) | Player sprite across levels, shopkeeper/innkeeper sprites across levels, plus baked core sprites if present (shop/inn NPCs, princess cure pair, key props) |
 | New every run | Maps, placements, quest text, NPC names, and (optionally) some item sprites depending on Quality |
 
 **Sprite load order (fastest to slowest)**: baked `assets/sprites/` → local disk cache `generated_sprites/` → image API.
