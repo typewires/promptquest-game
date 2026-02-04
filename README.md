@@ -46,8 +46,8 @@ Then return to the terminal and press **ENTER** to start playing.
 
 ## What Prompts Change
 Prompts primarily influence the **setting and vibe**:
-- Terrain style (forest/town/desert/ruins, etc.)
-- Time of day (day/sunset/night)
+- Terrain style (forest/town/desert/ruins/castle/beach/snow, etc.)
+- Time of day (day/dawn/sunset/night)
 - Themed NPC + item flavor
 
 Quests are chosen from a **set of allowed goal types** to keep gameplay reliable:
@@ -55,6 +55,13 @@ Quests are chosen from a **set of allowed goal types** to keep gameplay reliable
 - The AI fills in the *flavor*: names, dialogue, item descriptions, and visual style.
 
 If you don’t specify goals, the game picks them and varies them across levels.
+
+### Prompt → Map Matching
+The game uses a mix of:
+- AI output (terrain type/features returned by the world JSON)
+- A prompt “hint extractor” (keyword-based) to strongly align the map with your prompt
+
+If your prompt clearly implies a biome/time (e.g. “desert oasis at night”, “harbor town”, “ruined temple”), the generator will bias/override the terrain/time-of-day and add themed decor so the level looks distinct and on-theme.
 
 ## Goal Types (And Exactly How They’re Selected)
 
@@ -122,10 +129,10 @@ Note: `generated_sprites/` is ignored by git by default (it’s a local cache).
 
 ## Quest Types (Examples)
 Each level picks one quest type (varied across the run):
-- `cure`: Collect ingredients, mix a remedy, heal a sick NPC (the NPC sprite swaps to a “healed” version).
+- `cure`: Collect ingredients, mix a remedy, heal a sick NPC (NPC starts with a “sick” sprite and swaps to a “healed” sprite on completion).
 - `key_and_door`: Find a chest, open it, get a key, unlock a door.
 - `lost_item`: Search the map for a missing item and return it.
-- `repair_bridge`: Visit a shop, buy materials (planks/rope/nails) with in‑game money, then repair a broken bridge to reach the objective.
+- `repair_bridge`: Visit a shop, buy materials (bridge planks/rope/nails) with in‑game money, then repair a broken bridge (visual changes from broken → fixed) to reach the objective.
 
 ## How To Complete Each Goal
 
@@ -186,6 +193,11 @@ Some levels include enterable buildings (e.g., a shop/inn).
 ### How buying ties into goals
 - `repair_bridge` uses the shop to sell required materials.
 - Other goal types may still spawn shops (for flavor and future expansion), but `repair_bridge` is the one that currently depends on buying items.
+
+### Inn Sleeping (Time Change)
+The inn is also interactive:
+- Walk up to a bed and press `SPACE` to rent a bed (costs gold).
+- When you exit back outside, time toggles (`day ↔ night`) and the map palette updates.
 
 ## Repo Layout
 - `game_generator.py`: everything (Flask UI + generator + Pygame engine)
