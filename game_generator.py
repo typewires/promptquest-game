@@ -1,5 +1,5 @@
 """
-GENIE GAME GENERATOR v7 - Clean Pokemon Style!
+GENIE GAME GENERATOR 
 ===============================================
 - Varied quest types generated per world (cure, key+door, lost item)
 - Animated characters + environment (bobbing, water shimmer, swaying)
