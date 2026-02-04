@@ -170,13 +170,17 @@ Sprite images are cached on disk so reruns can be much cheaper.
 Note: `generated_sprites/` is ignored by git by default (it’s a local cache).
 
 ## Pre-Generating Core Sprites (Ship With GitHub)
-If you want to keep costs low for users, you can “bake” a set of core sprites once at **High** quality and commit them to the repo.
+This section is primarily for the **repo maintainer (you)**: you can generate a small set of core sprites once at **High** quality, commit them to the repo, and then **everyone** who runs the game from GitHub will reuse them automatically (fewer image API calls, lower cost).
+
+Players generally **should not push** baked sprites back to your repo (unless you accept PRs). If a player is running from source and wants their own local baked sprites, they *can* run the bake command locally, but they don’t need to commit anything.
 
 What gets baked (recommended):
-- Shopkeeper + Innkeeper NPC sprites (`npc_shop`, `npc_inn`)
-- Core props: `chest`, `key`, `door`, `mix_station`
-- Bridge material icons: `mat_planks`, `mat_rope`, `mat_nails`
-- A generic item icon used when item-sprite budget is low: `item_generic`
+- **Exactly 10 PNGs** (plus 1 manifest):
+- NPCs: `assets/sprites/npc_shop.png`, `assets/sprites/npc_inn.png`
+- Props: `assets/sprites/chest.png`, `assets/sprites/key.png`, `assets/sprites/door.png`, `assets/sprites/mix_station.png`
+- Bridge materials: `assets/sprites/mat_planks.png`, `assets/sprites/mat_rope.png`, `assets/sprites/mat_nails.png`
+- Generic item icon: `assets/sprites/item_generic.png`
+- Manifest: `assets/sprites/manifest.json`
 
 ### Bake command
 From the repo root:
@@ -188,14 +192,19 @@ python game_generator.py --bake-core --quality high
 
 This writes PNGs to `assets/sprites/` and a `assets/sprites/manifest.json`.
 
-### Commit and push baked sprites
+### Commit and push baked sprites (maintainer workflow)
 ```bash
 git add assets/sprites
-git commit -m "Add baked core sprites"
+git commit -m "Add baked core sprites (high quality)"
 git push
 ```
 
-When `assets/sprites/` contains baked sprites, the game will automatically load and reuse them instead of calling image generation for those keys.
+### How “preloading” works at runtime
+On every run, the game checks `assets/sprites/` first:
+- If a baked sprite file exists for a key (via `assets/sprites/manifest.json`), it is loaded and used.
+- If it’s missing, the game falls back to AI image generation (and/or disk cache).
+
+So after you commit baked sprites to GitHub, users who clone the repo will automatically reuse them without doing anything special.
 
 ## Quest Types (Examples)
 Each level picks one quest type (varied across the run):
