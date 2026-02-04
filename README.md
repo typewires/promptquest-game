@@ -78,6 +78,30 @@ The game uses a mix of:
 
 If your prompt clearly implies a biome/time (e.g. “desert oasis at night”, “harbor town”, “ruined temple”), the generator will bias/override the terrain/time-of-day and add themed decor so the level looks distinct and on-theme.
 
+### Are levels infinite?
+The generator has **finite, hard-coded map building blocks** (biomes, time-of-day palettes, and layout styles), but you can mix-and-match them with your prompt for lots of variety.
+
+What’s fixed (finite sets):
+- **Biomes (terrain types)**: `meadow`, `forest`, `town`, `beach`, `snow`, `desert`, `ruins`, `castle`
+- **Time of day** (affects palette + lighting): `day`, `dawn`, `sunset`, `night`
+- **Layout styles** (big structural differences):
+  - `winding_road`, `crossroads`, `ring_road`, `plaza`, `market_street`
+  - `coastline`, `riverbend`, `islands`, `oasis`, `lake_center`
+  - `maze_grove`, `ruin_ring`
+
+What’s flexible (varies widely):
+- Where paths/water/trees/rocks/etc. are placed (seeded per level)
+- NPC/item flavor text + AI-generated sprites
+
+### Theme Decor You Might See
+Based on prompt keywords + biome, the map renderer can add extra themed decor such as:
+- Desert: **cacti**, oasis-like water layouts
+- Beach/harbor prompts: **shells**, coastline water bands, crates near paths
+- Snow: **snow piles**
+- Town/market/bazaar/port/harbor: **crates** and busier street layouts (`market_street`)
+- Ruins/temple/castle: **statues** and **vines**, ruin-like layouts (`ruin_ring`)
+- Forest + night/mushroom vibe: **mushrooms**
+
 ## Goal Types (And Exactly How They’re Selected)
 
 **Allowed goal types** (hard-coded in `game_generator.py`):
