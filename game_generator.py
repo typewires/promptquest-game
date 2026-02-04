@@ -117,6 +117,88 @@ def infer_goal_from_prompt(prompt: str) -> str | None:
     return None
 
 
+def extract_env_hints(prompt: str) -> dict:
+    """
+    Heuristically extract environment intent from the user prompt so the generated map
+    better matches the vibe even if the LLM returns generic terrain/features.
+    """
+    p = (prompt or "").lower()
+
+    # Time of day
+    tod = None
+    if any(k in p for k in ["night", "midnight", "moonlit", "starlit"]):
+        tod = "night"
+    elif any(k in p for k in ["sunset", "dusk", "twilight"]):
+        tod = "sunset"
+    elif any(k in p for k in ["dawn", "sunrise", "early morning"]):
+        tod = "dawn"
+    elif any(k in p for k in ["day", "noon", "afternoon", "morning"]):
+        tod = "day"
+
+    # Terrain / biome
+    terrain = None
+    if any(k in p for k in ["desert", "oasis", "dune", "sand"]):
+        terrain = "desert"
+    elif any(k in p for k in ["beach", "coast", "seaside", "shore", "port", "harbor"]):
+        terrain = "beach"
+    elif any(k in p for k in ["snow", "blizzard", "ice", "frost", "winter"]):
+        terrain = "snow"
+    elif any(k in p for k in ["town", "village", "city", "market", "bazaar", "street"]):
+        terrain = "town"
+    elif any(k in p for k in ["castle", "keep"]):
+        terrain = "castle"
+    elif any(k in p for k in ["ruins", "temple", "ancient", "dungeon"]):
+        terrain = "ruins"
+    elif any(k in p for k in ["forest", "woods", "grove", "jungle"]):
+        terrain = "forest"
+
+    # Layout style
+    layout_style = None
+    if "oasis" in p:
+        layout_style = "oasis"
+    elif any(k in p for k in ["market", "bazaar", "street"]):
+        layout_style = "market_street"
+    elif any(k in p for k in ["plaza", "square", "courtyard"]):
+        layout_style = "plaza"
+    elif any(k in p for k in ["coast", "shore", "seaside"]):
+        layout_style = "coastline"
+    elif any(k in p for k in ["maze", "labyrinth"]):
+        layout_style = "maze_grove"
+    elif any(k in p for k in ["river", "creek", "stream"]):
+        layout_style = "riverbend"
+
+    # Theme tags drive extra decor overlays.
+    tags = set()
+    for k in [
+        "oasis",
+        "market",
+        "bazaar",
+        "ruins",
+        "temple",
+        "castle",
+        "port",
+        "harbor",
+        "lantern",
+        "festival",
+        "mushroom",
+        "vines",
+        "statue",
+    ]:
+        if k in p:
+            tags.add(k)
+    if terrain:
+        tags.add(terrain)
+    if tod:
+        tags.add(tod)
+
+    return {
+        "time_of_day": tod,
+        "terrain": terrain,
+        "layout_style": layout_style,
+        "theme_tags": sorted(tags),
+    }
+
+
 # ============================================================
 # PARTICLE EFFECTS
 # ============================================================
@@ -810,16 +892,69 @@ RULES:
         
         try:
             game = json.loads(response.strip())
-            return self._normalize_game(game)
+            return self._normalize_game(game, user_prompt=user_prompt)
         except:
-            return self._normalize_game(self._fallback(user_prompt, quest_type_hint))
+            return self._normalize_game(self._fallback(user_prompt, quest_type_hint), user_prompt=user_prompt)
 
-    def _normalize_game(self, game: dict) -> dict:
+    def _normalize_game(self, game: dict, user_prompt: str = "") -> dict:
         """Ensure required quest fields exist and sanitize missing data."""
+        # Seed used for terrain layout so each level can look distinct but stable.
+        if "seed" not in game:
+            game["seed"] = random.randint(1, 2_000_000_000)
+
         quest = game.get("quest", {})
         allowed = set(ALLOWED_GOALS)
         if quest.get("type") not in allowed:
             quest["type"] = random.choice(list(allowed))
+
+        # Terrain defaults + variety knobs
+        hints = extract_env_hints(user_prompt)
+        terrain = game.get("terrain") or {}
+        # If the prompt implies a strong biome, prefer it.
+        ttype = str(terrain.get("type") or "meadow").lower()
+        if hints.get("terrain"):
+            ttype = hints["terrain"]
+        terrain["type"] = ttype
+        # Carry tags so TerrainRenderer can add themed decor.
+        if hints.get("theme_tags"):
+            terrain["theme_tags"] = hints["theme_tags"]
+        if "features" not in terrain or not terrain.get("features"):
+            # Pick a varied set of features based on biome.
+            base = {
+                "meadow": ["path", "flowers", "trees", "rocks", "water"],
+                "forest": ["path", "trees", "flowers", "rocks", "water"],
+                "town": ["path", "signs", "lamps", "trees", "flowers"],
+                "beach": ["path", "water", "rocks", "flowers"],
+                "snow": ["path", "rocks", "trees", "water"],
+                "desert": ["path", "rocks", "ruins", "water"],
+                "ruins": ["path", "ruins", "rocks", "water"],
+                "castle": ["path", "ruins", "rocks", "water", "lamps"],
+            }.get(ttype, ["path", "trees", "rocks", "flowers"])
+            # Sample 3-5 features so it doesn't feel identical.
+            k = random.randint(3, min(5, len(base)))
+            terrain["features"] = random.sample(base, k=k)
+
+        # Layout styles drastically change the feel of the map.
+        if hints.get("layout_style"):
+            terrain["layout_style"] = hints["layout_style"]
+        elif "layout_style" not in terrain:
+            styles_by_type = {
+                "meadow": ["winding_road", "crossroads", "ring_road", "plaza"],
+                "forest": ["winding_road", "maze_grove", "riverbend", "ring_road"],
+                "town": ["plaza", "crossroads", "market_street", "ring_road"],
+                "beach": ["coastline", "winding_road", "islands", "riverbend"],
+                "snow": ["winding_road", "crossroads", "lake_center", "ring_road"],
+                "desert": ["oasis", "ruin_ring", "winding_road", "riverbend"],
+                "ruins": ["ruin_ring", "crossroads", "maze_grove", "riverbend"],
+                "castle": ["plaza", "ring_road", "crossroads", "ruin_ring"],
+            }
+            terrain["layout_style"] = random.choice(styles_by_type.get(ttype, ["winding_road", "crossroads"]))
+
+        game["terrain"] = terrain
+
+        # Time of day: if prompt strongly implies it, prefer it.
+        if hints.get("time_of_day"):
+            game["time_of_day"] = hints["time_of_day"]
 
         # Ensure items
         items = quest.get("items") or game.get("items") or []
@@ -874,9 +1009,27 @@ RULES:
         # Repair bridge quest requirements
         if quest["type"] == "repair_bridge":
             quest["items"] = [
-                {"id": "planks", "name": "Wooden Planks", "sprite_desc": "stack of wooden planks tied with rope", "x": 0, "y": 0},
-                {"id": "rope", "name": "Sturdy Rope", "sprite_desc": "coiled rope with a knot, tan color", "x": 0, "y": 0},
-                {"id": "nails", "name": "Iron Nails", "sprite_desc": "small pouch of iron nails with a few nails visible", "x": 0, "y": 0},
+                {
+                    "id": "planks",
+                    "name": "Bridge Planks",
+                    "sprite_desc": "stack of sturdy wooden bridge planks, slightly weathered, strapped with twine",
+                    "x": 0,
+                    "y": 0,
+                },
+                {
+                    "id": "rope",
+                    "name": "Hemp Rope Coil",
+                    "sprite_desc": "thick coil of hemp rope with a knot, tan color, rugged fibers",
+                    "x": 0,
+                    "y": 0,
+                },
+                {
+                    "id": "nails",
+                    "name": "Iron Nails",
+                    "sprite_desc": "small pouch of iron nails with a few nails visible, dark metal sheen",
+                    "x": 0,
+                    "y": 0,
+                },
             ]
             quest.pop("mix_station", None)
             quest.pop("npc_healed_sprite_desc", None)
@@ -1227,6 +1380,48 @@ class TerrainRenderer:
             "flower2": (255, 200, 100),
             "flower3": (255, 130, 130),
         },
+        "day_desert": {
+            "bg": (225, 200, 150),
+            "grass_dark": (200, 175, 125),
+            "grass_light": (235, 210, 160),
+            "path": (210, 185, 140),
+            "water": (70, 160, 220),
+            "water_light": (110, 190, 235),
+            "tree_trunk": (160, 120, 70),
+            "tree_leaves": (120, 170, 120),
+            "rock": (175, 160, 150),
+            "flower1": (255, 160, 120),
+            "flower2": (255, 230, 120),
+            "flower3": (200, 170, 255),
+        },
+        "night_desert": {
+            "bg": (70, 60, 80),
+            "grass_dark": (60, 55, 70),
+            "grass_light": (85, 75, 95),
+            "path": (95, 85, 105),
+            "water": (40, 80, 150),
+            "water_light": (60, 110, 175),
+            "tree_trunk": (80, 60, 50),
+            "tree_leaves": (50, 90, 80),
+            "rock": (95, 90, 110),
+            "flower1": (180, 120, 180),
+            "flower2": (120, 120, 180),
+            "flower3": (180, 180, 210),
+        },
+        "day_ruins": {
+            "bg": (145, 150, 160),
+            "grass_dark": (120, 125, 135),
+            "grass_light": (160, 165, 175),
+            "path": (175, 165, 150),
+            "water": (80, 140, 210),
+            "water_light": (120, 170, 230),
+            "tree_trunk": (110, 80, 60),
+            "tree_leaves": (85, 120, 85),
+            "rock": (130, 130, 145),
+            "flower1": (255, 180, 160),
+            "flower2": (230, 230, 160),
+            "flower3": (190, 170, 255),
+        },
     }
     
     def __init__(self, game: dict, config: Config):
@@ -1241,7 +1436,12 @@ class TerrainRenderer:
         palette_key = f"{time_of_day}_{terrain_type}"
         if palette_key not in self.PALETTES:
             # Fallback
-            if "night" in time_of_day:
+            # Try biome-aware fallbacks first.
+            if "desert" in terrain_type:
+                palette_key = "night_desert" if "night" in time_of_day else "day_desert"
+            elif "ruin" in terrain_type:
+                palette_key = "day_ruins"
+            elif "night" in time_of_day:
                 palette_key = "night_castle"
             elif "sunset" in time_of_day or "dusk" in time_of_day:
                 palette_key = "sunset_meadow"
@@ -1249,7 +1449,12 @@ class TerrainRenderer:
                 palette_key = "day_meadow"
         
         self.palette = self.PALETTES[palette_key]
-        self.features = game.get("terrain", {}).get("features", ["trees", "path"])
+        terrain = game.get("terrain", {}) or {}
+        self.features = terrain.get("features", ["trees", "path"])
+        self.layout_style = game.get("terrain", {}).get("layout_style", "winding_road")
+        self.theme_tags = set([str(t).lower() for t in (terrain.get("theme_tags") or [])])
+        self.seed = int(game.get("seed", random.randint(1, 2_000_000_000)))
+        self.rng = random.Random(self.seed)
         
         # Generate random terrain layout
         self.generate_layout()
@@ -1265,76 +1470,228 @@ class TerrainRenderer:
         self.lamps = []
         self.signs = []
         self.ruins = []
+        self.fences = []
+        self.cacti = []
+        self.mushrooms = []
+        self.shells = []
+        self.snow_piles = []
+        self.crates = []
+        self.statues = []
+        self.vines = []
         self.tile_variation = {}
-        
-        # Add a winding path
+
+        def rand(a, b):
+            return self.rng.randint(a, b)
+
+        def choice(seq):
+            return self.rng.choice(seq)
+
+        def chance(p):
+            return self.rng.random() < p
+
+        def add_pond(cx, cy, r=3):
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    if (dx * dx + dy * dy) <= (r * r) - 1:
+                        x, y = cx + dx, cy + dy
+                        if 0 <= x < self.mw and 0 <= y < self.mh:
+                            self.water_tiles.add((x, y))
+
+        def add_river(horizontal: bool):
+            if horizontal:
+                y = rand(2, self.mh - 3)
+                x = 0
+                while x < self.mw:
+                    self.water_tiles.add((x, y))
+                    if chance(0.25):
+                        y = max(2, min(self.mh - 3, y + choice([-1, 0, 1])))
+                    x += 1
+            else:
+                x = rand(2, self.mw - 3)
+                y = 0
+                while y < self.mh:
+                    self.water_tiles.add((x, y))
+                    if chance(0.25):
+                        x = max(2, min(self.mw - 3, x + choice([-1, 0, 1])))
+                    y += 1
+
+        # PATH LAYOUTS (big impact on distinctness)
         if "path" in self.features:
-            px, py = 0, self.mh // 2
-            while px < self.mw:
-                self.path_tiles.add((px, py))
-                self.path_tiles.add((px, py + 1))
-                px += 1
-                if random.random() < 0.3:
-                    py = max(2, min(self.mh - 3, py + random.choice([-1, 1])))
-        
-        # Add water (pond or stream)
+            style = str(self.layout_style or "winding_road")
+            if style == "crossroads":
+                cx, cy = self.mw // 2, self.mh // 2
+                for x in range(self.mw):
+                    self.path_tiles.add((x, cy))
+                    if chance(0.6):
+                        self.path_tiles.add((x, cy + 1))
+                for y in range(self.mh):
+                    self.path_tiles.add((cx, y))
+                    if chance(0.6):
+                        self.path_tiles.add((cx + 1, y))
+            elif style == "ring_road":
+                for x in range(1, self.mw - 1):
+                    self.path_tiles.add((x, 2))
+                    self.path_tiles.add((x, self.mh - 3))
+                for y in range(2, self.mh - 2):
+                    self.path_tiles.add((1, y))
+                    self.path_tiles.add((self.mw - 2, y))
+            elif style == "plaza":
+                cx, cy = self.mw // 2, self.mh // 2
+                for y in range(cy - 2, cy + 3):
+                    for x in range(cx - 3, cx + 4):
+                        self.path_tiles.add((x, y))
+                # Roads out
+                for x in range(self.mw):
+                    if chance(0.7):
+                        self.path_tiles.add((x, cy))
+                for y in range(self.mh):
+                    if chance(0.7):
+                        self.path_tiles.add((cx, y))
+            elif style == "market_street":
+                y = rand(2, self.mh - 3)
+                for x in range(self.mw):
+                    self.path_tiles.add((x, y))
+                    if chance(0.4):
+                        self.path_tiles.add((x, y + 1))
+                # Side streets
+                for _ in range(3):
+                    sx = rand(3, self.mw - 4)
+                    for yy in range(2, self.mh - 2):
+                        if chance(0.75):
+                            self.path_tiles.add((sx, yy))
+            else:
+                # winding_road default
+                px, py = 0, self.mh // 2
+                while px < self.mw:
+                    self.path_tiles.add((px, py))
+                    if chance(0.6):
+                        self.path_tiles.add((px, py + 1))
+                    px += 1
+                    if chance(0.35):
+                        py = max(2, min(self.mh - 3, py + choice([-1, 1])))
+
+        # WATER LAYOUTS
         if "water" in self.features:
-            wx, wy = random.randint(8, 12), random.randint(2, 4)
-            for dy in range(-2, 3):
-                for dx in range(-2, 3):
-                    if (dx*dx + dy*dy) < 6:
-                        self.water_tiles.add((wx + dx, wy + dy))
-        
-        # Add trees
+            style = str(self.layout_style or "")
+            if style in ["coastline"]:
+                # Large water band at one side.
+                edge = choice(["top", "bottom", "left", "right"])
+                if edge in ["top", "bottom"]:
+                    y0 = 0 if edge == "top" else self.mh - 4
+                    for y in range(y0, y0 + 4):
+                        for x in range(self.mw):
+                            self.water_tiles.add((x, y))
+                else:
+                    x0 = 0 if edge == "left" else self.mw - 4
+                    for x in range(x0, x0 + 4):
+                        for y in range(self.mh):
+                            self.water_tiles.add((x, y))
+            elif style in ["riverbend", "maze_grove"]:
+                add_river(horizontal=chance(0.5))
+                if chance(0.5):
+                    add_pond(rand(4, self.mw - 5), rand(3, self.mh - 4), r=2)
+            elif style in ["islands"]:
+                for _ in range(rand(2, 4)):
+                    add_pond(rand(3, self.mw - 4), rand(3, self.mh - 4), r=rand(2, 3))
+            elif style in ["oasis"]:
+                add_pond(self.mw // 2, rand(3, self.mh - 5), r=3)
+            elif style in ["lake_center"]:
+                add_pond(self.mw // 2, self.mh // 2, r=4)
+            else:
+                add_pond(rand(5, self.mw - 5), rand(3, self.mh - 4), r=3)
+
+        # CLUSTERS: trees/rocks/bushes/flowers
+        def scatter_cluster(kind: str, count: int, clusters: int):
+            if count <= 0:
+                return
+            centers = [(rand(1, self.mw - 2), rand(1, self.mh - 2)) for _ in range(max(1, clusters))]
+            for _ in range(count):
+                cx, cy = choice(centers)
+                x = max(0, min(self.mw - 1, cx + rand(-3, 3)))
+                y = max(0, min(self.mh - 1, cy + rand(-3, 3)))
+                if (x, y) in self.water_tiles or (x, y) in self.path_tiles:
+                    continue
+                if kind == "tree":
+                    self.trees.append((x, y))
+                elif kind == "rock":
+                    self.rocks.append((x, y))
+                elif kind == "bush":
+                    self.bushes.append((x, y))
+
         if "trees" in self.features:
-            for _ in range(8):
-                tx, ty = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
-                if (tx, ty) not in self.water_tiles and (tx, ty) not in self.path_tiles:
-                    self.trees.append((tx, ty))
-        
-        # Add rocks
+            scatter_cluster("tree", count=rand(6, 14), clusters=rand(2, 4))
         if "rocks" in self.features:
-            for _ in range(5):
-                rx, ry = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
-                if (rx, ry) not in self.water_tiles:
-                    self.rocks.append((rx, ry))
-        
-        # Add flowers
+            scatter_cluster("rock", count=rand(4, 9), clusters=rand(2, 3))
+        # Always some bushes, but more/less depending on style.
+        scatter_cluster("bush", count=rand(6, 14), clusters=rand(2, 4))
+
         if "flowers" in self.features:
-            for _ in range(25):
-                fx, fy = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
-                if (fx, fy) not in self.water_tiles and (fx, fy) not in self.path_tiles:
-                    self.flowers.append((
-                        fx * self.ts + random.randint(6, self.ts-6),
-                        fy * self.ts + random.randint(6, self.ts-6),
-                        random.choice(["flower1", "flower2", "flower3"]),
-                        random.uniform(0, math.pi * 2)
-                    ))
+            for _ in range(rand(18, 40)):
+                fx, fy = rand(0, self.mw - 1), rand(0, self.mh - 1)
+                if (fx, fy) in self.water_tiles or (fx, fy) in self.path_tiles:
+                    continue
+                self.flowers.append((
+                    fx * self.ts + rand(6, self.ts - 6),
+                    fy * self.ts + rand(6, self.ts - 6),
+                    choice(["flower1", "flower2", "flower3"]),
+                    self.rng.uniform(0, math.pi * 2),
+                ))
 
-        # Add bushes for depth
-        for _ in range(10):
-            bx, by = random.randint(0, self.mw-1), random.randint(0, self.mh-1)
-            if (bx, by) not in self.water_tiles and (bx, by) not in self.path_tiles:
-                self.bushes.append((bx, by))
-
-        # Add lamps/signs/ruins for richer environments
-        for _ in range(4):
-            lx, ly = random.randint(1, self.mw-2), random.randint(1, self.mh-2)
+        # Lamps/signs/ruins/fences (distinct landmarks)
+        for _ in range(rand(2, 7)):
+            lx, ly = rand(1, self.mw - 2), rand(1, self.mh - 2)
             if (lx, ly) not in self.water_tiles and (lx, ly) in self.path_tiles:
                 self.lamps.append((lx, ly))
-        for _ in range(4):
-            sx, sy = random.randint(1, self.mw-2), random.randint(1, self.mh-2)
+
+        for _ in range(rand(2, 6)):
+            sx, sy = rand(1, self.mw - 2), rand(1, self.mh - 2)
             if (sx, sy) not in self.water_tiles and (sx, sy) not in self.path_tiles:
                 self.signs.append((sx, sy))
-        for _ in range(3):
-            rx, ry = random.randint(1, self.mw-2), random.randint(1, self.mh-2)
-            if (rx, ry) not in self.water_tiles and (rx, ry) not in self.path_tiles:
-                self.ruins.append((rx, ry))
+
+        # Ruins become more likely in certain layouts.
+        if "ruins" in self.features or str(self.layout_style) in ["ruin_ring"]:
+            for _ in range(rand(3, 7)):
+                rx, ry = rand(1, self.mw - 2), rand(1, self.mh - 2)
+                if (rx, ry) not in self.water_tiles and (rx, ry) not in self.path_tiles:
+                    self.ruins.append((rx, ry))
+
+        # Light fencing around some path edges for variety (non-solid visual).
+        for _ in range(rand(8, 18)):
+            fx, fy = rand(1, self.mw - 2), rand(1, self.mh - 2)
+            if (fx, fy) in self.path_tiles and (fx, fy) not in self.water_tiles:
+                if chance(0.35):
+                    self.fences.append((fx, fy))
 
         # Tile variation map for subtle texture
         for y in range(self.mh):
             for x in range(self.mw):
-                self.tile_variation[(x, y)] = random.choice([0, 1, 2])
+                self.tile_variation[(x, y)] = self.rng.choice([0, 1, 2])
+
+        # Theme-driven decor overlays (prompt alignment)
+        def sprinkle(points: list, count: int, avoid_water=True, avoid_path=True):
+            for _ in range(count):
+                x = rand(1, self.mw - 2)
+                y = rand(1, self.mh - 2)
+                if avoid_water and (x, y) in self.water_tiles:
+                    continue
+                if avoid_path and (x, y) in self.path_tiles:
+                    continue
+                points.append((x, y))
+
+        tags = self.theme_tags
+        if "desert" in tags:
+            sprinkle(self.cacti, count=rand(4, 9))
+        if "beach" in tags:
+            sprinkle(self.shells, count=rand(6, 14))
+        if "snow" in tags:
+            sprinkle(self.snow_piles, count=rand(5, 12))
+        if "town" in tags or "market" in tags or "bazaar" in tags or "port" in tags or "harbor" in tags:
+            sprinkle(self.crates, count=rand(3, 8), avoid_path=False)
+        if "ruins" in tags or "temple" in tags or "castle" in tags:
+            sprinkle(self.statues, count=rand(2, 5), avoid_path=False)
+            sprinkle(self.vines, count=rand(6, 14), avoid_path=False)
+        if "forest" in tags and ("night" in tags or "mushroom" in tags):
+            sprinkle(self.mushrooms, count=rand(6, 14))
     
     def draw(self, screen, t: float = 0.0):
         ts = self.ts
@@ -1431,6 +1788,55 @@ class TerrainRenderer:
             cx, cy = rx * ts + ts//2, ry * ts + ts//2
             pygame.draw.rect(screen, (120, 120, 130), (cx - 12, cy - 6, 24, 12))
             pygame.draw.rect(screen, (150, 150, 160), (cx - 6, cy - 10, 12, 6))
+
+        # Theme decor overlays (prompt alignment)
+        for fx, fy in getattr(self, "fences", []):
+            cx, cy = fx * ts + ts // 2, fy * ts + ts // 2
+            pygame.draw.line(screen, (90, 70, 50), (cx - 12, cy + 10), (cx + 12, cy + 10), 3)
+            pygame.draw.line(screen, (90, 70, 50), (cx - 10, cy + 10), (cx - 10, cy - 2), 3)
+            pygame.draw.line(screen, (90, 70, 50), (cx + 10, cy + 10), (cx + 10, cy - 2), 3)
+
+        for x, y in getattr(self, "cacti", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            pygame.draw.rect(screen, (70, 150, 90), (cx - 4, cy - 14, 8, 22), border_radius=4)
+            pygame.draw.rect(screen, (70, 150, 90), (cx - 12, cy - 6, 8, 10), border_radius=4)
+            pygame.draw.rect(screen, (70, 150, 90), (cx + 4, cy - 8, 8, 12), border_radius=4)
+            pygame.draw.ellipse(screen, (0, 0, 0), (cx - 12, cy + 10, 26, 6))
+
+        for x, y in getattr(self, "mushrooms", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            cap = (200, 100, 255) if (x + y) % 2 == 0 else (255, 120, 160)
+            pygame.draw.rect(screen, (220, 220, 230), (cx - 3, cy - 2, 6, 10), border_radius=3)
+            pygame.draw.circle(screen, cap, (cx, cy - 6), 10)
+            pygame.draw.circle(screen, (255, 255, 255), (cx - 4, cy - 8), 2)
+
+        for x, y in getattr(self, "shells", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            pygame.draw.ellipse(screen, (245, 230, 210), (cx - 10, cy - 4, 20, 10))
+            pygame.draw.line(screen, (220, 200, 185), (cx - 8, cy), (cx + 8, cy), 1)
+
+        for x, y in getattr(self, "snow_piles", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            pygame.draw.circle(screen, (245, 250, 255), (cx - 6, cy + 4), 10)
+            pygame.draw.circle(screen, (235, 240, 250), (cx + 6, cy + 6), 12)
+            pygame.draw.ellipse(screen, (0, 0, 0), (cx - 14, cy + 14, 30, 6))
+
+        for x, y in getattr(self, "crates", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            pygame.draw.rect(screen, (130, 90, 60), (cx - 12, cy - 12, 24, 24), border_radius=4)
+            pygame.draw.line(screen, (100, 70, 50), (cx - 12, cy - 12), (cx + 12, cy + 12), 2)
+            pygame.draw.line(screen, (100, 70, 50), (cx + 12, cy - 12), (cx - 12, cy + 12), 2)
+
+        for x, y in getattr(self, "statues", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            pygame.draw.rect(screen, (150, 150, 165), (cx - 10, cy - 16, 20, 26), border_radius=4)
+            pygame.draw.rect(screen, (120, 120, 140), (cx - 14, cy + 8, 28, 10), border_radius=4)
+            pygame.draw.circle(screen, (170, 170, 185), (cx, cy - 10), 7)
+
+        for x, y in getattr(self, "vines", []):
+            cx, cy = x * ts + ts // 2, y * ts + ts // 2
+            pygame.draw.line(screen, (60, 140, 80), (cx, cy - 14), (cx - 8, cy + 14), 3)
+            pygame.draw.line(screen, (60, 140, 80), (cx + 4, cy - 12), (cx + 10, cy + 12), 2)
     
     def get_solid_tiles(self) -> set:
         """Return tiles that block movement"""
