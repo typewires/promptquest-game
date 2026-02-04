@@ -141,6 +141,8 @@ def extract_env_hints(prompt: str) -> dict:
 
     # Terrain / biome
     terrain = None
+    if any(k in p for k in ["meadow", "field", "fields", "plains", "grassland"]):
+        terrain = "meadow"
     if any(k in p for k in ["desert", "oasis", "dune", "sand"]):
         terrain = "desert"
     elif any(k in p for k in ["beach", "coast", "seaside", "shore", "port", "harbor"]):
@@ -158,6 +160,19 @@ def extract_env_hints(prompt: str) -> dict:
 
     # Layout style
     layout_style = None
+    # Allow explicit layout style tokens in the prompt.
+    if "winding_road" in p or "winding road" in p:
+        layout_style = "winding_road"
+    elif "crossroads" in p:
+        layout_style = "crossroads"
+    elif "ring_road" in p or "ring road" in p:
+        layout_style = "ring_road"
+    elif "lake_center" in p or "lake center" in p or "central lake" in p:
+        layout_style = "lake_center"
+    elif "islands" in p:
+        layout_style = "islands"
+    elif "ruin_ring" in p or "ruin ring" in p:
+        layout_style = "ruin_ring"
     if "oasis" in p:
         layout_style = "oasis"
     elif any(k in p for k in ["market", "bazaar", "street"]):
@@ -3396,11 +3411,24 @@ HTML = '''
     <script>
         function setEx(t) { document.getElementById('prompt').value = t; }
         function randomPrompt() {
-            const places = [
-                "a cozy hillside village", "a misty forest shrine", "a sunny seaside town",
-                "a quiet desert oasis", "a snow‑covered mountain hamlet", "a castle courtyard"
+            // These arrays are intentionally aligned with the README's "fixed (finite sets)" so the
+            // randomizer can hit all supported biomes / times / layout styles and trigger themed decor.
+            const biomes = [
+                "meadow", "forest", "town", "beach", "snow", "desert", "ruins", "castle"
             ];
-            const times = ["at dawn", "at sunset", "under a clear night sky", "in the early morning", "during a warm afternoon"];
+            const times = ["day", "dawn", "sunset", "night"];
+            const layouts = [
+                "winding_road", "crossroads", "ring_road", "plaza", "market_street",
+                "coastline", "riverbend", "islands", "oasis", "lake_center",
+                "maze_grove", "ruin_ring"
+            ];
+            const decorTags = [
+                "cacti", "shells", "snow piles", "crates", "statues", "vines", "mushrooms", "lanterns", "harbor", "bazaar"
+            ];
+            const places = [
+                "a quiet town", "a lantern-lit harbor", "an ancient temple ruin", "a cliffside castle courtyard",
+                "a snowy mountain hamlet", "a windy beach coast", "a misty forest grove", "a sunlit meadow"
+            ];
             const heroes = [
                 "a red‑scarf alchemist’s apprentice", "a green‑cloaked ranger",
                 "a sailor‑adventurer with a brass compass", "a traveling bard with a lute",
@@ -3414,14 +3442,21 @@ HTML = '''
                 "gather three rare ingredients to brew a remedy",
                 "recover a lost heirloom hidden nearby",
                 "unlock an ancient gate with a hidden key",
-                "deliver a sealed message to restore peace",
-                "collect festival supplies scattered around"
+                "repair a broken bridge with materials from the shop",
+                "return a lost item to someone worried"
             ];
             const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-            const prompt = `${pick(places)} ${pick(times)}. The hero is ${pick(heroes)}. The NPC is ${pick(npcs)}. The quest is to ${pick(hooks)}.`;
+            const biome = pick(biomes);
+            const tod = pick(times);
+            const layout = pick(layouts);
+            const tag = pick(decorTags);
+            const place = pick(places);
+            // Include explicit tokens so the hint extractor/layout parser can lock onto them.
+            const prompt = `Setting: ${place}. Biome: ${biome}. Time: ${tod}. Layout: ${layout}. Theme: ${tag}. ` +
+                `The hero is ${pick(heroes)}. The NPC is ${pick(npcs)}. The quest is to ${pick(hooks)}.`;
             document.getElementById('prompt').value = prompt;
-            // For random prompts, default to auto goal picking (varied per level).
-            clearGoals();
+            // Randomize per-level goal options too (covers all allowed goal types over time).
+            randomGoals();
         }
 
         function clearGoals() {
