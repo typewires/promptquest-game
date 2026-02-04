@@ -2115,7 +2115,8 @@ class GameEngine:
         self.scene = "outdoor"  # or "indoor"
         self.current_building = None
         self.money = 60
-        self.sleep_pending = False
+        self.sleeping = False
+        self.sleep_end_ms = 0
 
         # Repair bridge state
         self.bridge_repaired = False
@@ -2552,19 +2553,30 @@ class GameEngine:
                                 idx = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2}[event.key]
                                 self.buy_good(idx)
                     elif event.key == pygame.K_SPACE or event.key == pygame.K_e:
-                        self.interact()
+                        # Sleeping: SPACE wakes early.
+                        if getattr(self, "sleeping", False):
+                            self._wake_from_sleep(early=True)
+                        else:
+                            self.interact()
             
             keys = pygame.key.get_pressed()
-            dx = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
-            dy = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
-            self.move(dx * self.config.PLAYER_SPEED, dy * self.config.PLAYER_SPEED)
-            if not self.game_won:
-                self.check_pickups()
+            if not getattr(self, "sleeping", False):
+                dx = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
+                dy = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
+                self.move(dx * self.config.PLAYER_SPEED, dy * self.config.PLAYER_SPEED)
+                if not self.game_won:
+                    self.check_pickups()
+            else:
+                self.is_moving = False
             
             self.effects.update()
             self.anim_time += self.config.ANIM_SPEED
             if self.message_timer > 0:
                 self.message_timer -= 1
+
+            # Auto-wake after ~5 seconds.
+            if getattr(self, "sleeping", False) and pygame.time.get_ticks() >= int(getattr(self, "sleep_end_ms", 0) or 0):
+                self._wake_from_sleep(early=False)
             
             self.draw()
             self.clock.tick(60)
@@ -2607,6 +2619,19 @@ class GameEngine:
         allow_flash = new_time in ["night", "dusk", "sunset"]
         self.effects = EffectsManager(allow_flash=allow_flash)
         self.terrain = TerrainRenderer(self.game, self.config)
+
+    def _wake_from_sleep(self, early: bool = False):
+        if not getattr(self, "sleeping", False):
+            return
+        self.sleeping = False
+        self.sleep_end_ms = 0
+        new_time = self._toggle_day_night()
+        self._apply_time_of_day(new_time)
+        self.effects.complete(self.player_x + self.config.TILE_SIZE // 2, self.player_y + self.config.TILE_SIZE // 2)
+        if early:
+            self.msg(f"You wake up early. It is now {new_time}.")
+        else:
+            self.msg(f"You wake up rested. It is now {new_time}.")
 
     def buy_good(self, idx: int):
         if not self.current_building:
@@ -2697,13 +2722,6 @@ class GameEngine:
                 ox, oy = self.current_building["entrance"] if self.current_building else (3, self.config.MAP_HEIGHT // 2)
                 self.player_x = ox * ts
                 self.player_y = (oy + 1) * ts
-                # If the player rented a bed in the inn, apply a time skip when they return outside.
-                if getattr(self, "sleep_pending", False) and self.current_building and self.current_building.get("theme") == "inn":
-                    new_time = self._toggle_day_night()
-                    self._apply_time_of_day(new_time)
-                    self.sleep_pending = False
-                    self.msg(f"You wake up. It is now {new_time}.")
-                    return
                 self.msg("Back outside.")
                 return
 
@@ -2778,9 +2796,16 @@ class GameEngine:
                         if self.money < price:
                             self.msg(f"Not enough gold to rent a bed. Need {price}g.")
                             return
+                        if getattr(self, "sleeping", False):
+                            self.msg("Already sleeping...")
+                            return
                         self.money -= price
-                        self.sleep_pending = True
-                        self.msg(f"You sleep peacefully... (-{price}g). Leave the inn to see time change.")
+                        # Snap to the bed tile and sleep for ~5 seconds (SPACE to wake early).
+                        self.player_x = bx * ts
+                        self.player_y = by * ts
+                        self.sleeping = True
+                        self.sleep_end_ms = pygame.time.get_ticks() + 5000
+                        self.msg(f"You lie down... zzz (-{price}g). (SPACE to wake)")
                         return
 
         # Bridge interaction (repair_bridge quest)
@@ -2910,8 +2935,18 @@ class GameEngine:
             goods = self.current_building.get("goods", [])
             # Draw 2-3 goods as floating icons near the shelves
             for gi, g in enumerate(goods[:3]):
-                gx = self.config.MAP_WIDTH // 2 - 3 + gi * 2
-                gy = 6
+                theme = self.current_building.get("theme")
+                if theme == "shop":
+                    # Put items on the back shelves (not the middle of the floor).
+                    gx = 3 + gi * 4
+                    gy = 2
+                elif theme == "inn":
+                    # Put items near the table.
+                    gx = self.config.MAP_WIDTH // 2 - 1 + gi * 2
+                    gy = 6
+                else:
+                    gx = self.config.MAP_WIDTH // 2 - 3 + gi * 2
+                    gy = 6
                 ox, oy = self._float_offset(g["id"])
                 sprite = "item"
                 if g["id"] == "planks" and "mat_planks" in self.surfaces:
@@ -2987,6 +3022,17 @@ class GameEngine:
         
         # Effects
         self.effects.draw(self.screen)
+
+        # Sleeping overlay (inn)
+        if getattr(self, "sleeping", False):
+            overlay = pygame.Surface((map_w, map_h), pygame.SRCALPHA)
+            overlay.fill((10, 10, 20, 140))
+            self.screen.blit(overlay, (0, 0))
+            # Floating Zzz above the player
+            z = self.font_title.render("Z z z", True, (230, 230, 255))
+            self.screen.blit(z, (int(self.player_x + ts * 0.2), int(self.player_y - ts * 0.6)))
+            sub = self.font.render("Sleeping... (SPACE to wake)", True, (230, 230, 255))
+            self.screen.blit(sub, (12, map_h - 30))
 
         # Quest log (pinned)
         self.draw_quest_log(map_w)
