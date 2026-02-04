@@ -1,6 +1,5 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-python-dotenv>=1.0
+flask>=3.0
 requests>=2.31
-openai>=1.30
-pydantic>=2.6
+pygame>=2.5
+pillow>=10.0
+
