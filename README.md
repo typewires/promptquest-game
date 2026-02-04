@@ -37,6 +37,21 @@ python game_generator.py
 
 Then return to the terminal and press **ENTER** to start playing.
 
+## Example Prompt (With Per-Level Goals)
+Try pasting this into the prompt box:
+
+```
+A lantern-lit harbor town at night with wet cobblestone streets, crates by the docks, and a cozy inn.
+Level 1: lost_item
+Level 2: key_and_door
+Level 3: repair_bridge
+```
+
+What you’ll typically get (varies run-to-run):
+- Level 1 (lost_item): an NPC asks for a missing item; the item is somewhere on the map; return it to finish the level.
+- Level 2 (key_and_door): a chest spawns; opening it reveals a key; the key unlocks a door.
+- Level 3 (repair_bridge): a broken bridge blocks an area; buy materials in the shop; repair the bridge (visual changes) and cross.
+
 ## Controls
 - `WASD` / Arrow keys: Move
 - `SPACE`: Interact (talk, open, pick up, use)
@@ -82,12 +97,12 @@ You have three ways to influence goals:
    - If you leave a level blank, it will be randomized from all allowed goals.
    - The generator tries to **avoid repeating** the same goal type across levels when possible.
 
-2. **Per-level explicit goals (inside your prompt)** — highest priority
+2. **Per-level explicit goals (inside your prompt)** — takes precedence
    - You can force goals with text like:
      - `Level 1: cure`
      - `Level 2: key_and_door`
      - `Level 3: repair_bridge`
-   - These override any UI selections for that level.
+   - “Takes precedence” means: if you specify a goal for a level in the prompt, that level will use it even if you clicked different goals in the UI.
 
 3. **Implicit goal (Level 1 only)** — inferred from your prompt text
    - If Level 1 isn’t explicitly set, the game may infer it from keywords:
@@ -97,10 +112,13 @@ You have three ways to influence goals:
      - “bridge / repair” → `repair_bridge`
    - Inference is only used when it makes sense for the level’s available options.
 
-### Are later levels AI-generated goals?
-Later levels are **not free-form “invented” by the AI**. Instead:
-- Code selects a goal type for each level (using the rules above).
-- The AI generates the level’s **content** consistent with that selected goal type (NPC flavor, items, dialogue, look).
+### Prompt Directive Syntax (All Levels)
+You can explicitly set goals for any of the supported levels by writing these lines anywhere in your prompt:
+- `Level 1: cure | key_and_door | lost_item | repair_bridge`
+- `Level 2: cure | key_and_door | lost_item | repair_bridge`
+- `Level 3: cure | key_and_door | lost_item | repair_bridge`
+
+These are optional. If you omit a level directive, that level’s goal will be chosen from your UI selections (or randomized if left blank).
 
 ## Cost / Quality Settings
 The generator UI has a **Quality** dropdown:
