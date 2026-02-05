@@ -52,8 +52,8 @@ Each level gets one goal type: `cure`, `key_and_door`, `lost_item`, or `repair_b
 3. Story + Sprites (AI)
 Text AI generates names, dialogue, and quest steps. Image AI generates sprites, with cost controls via the Quality dropdown plus baked sprites and local disk caching.
 
-## At A Glance (Very Simple)
-This repo is the **generator**. When you press Generate, it produces a **new playable run** (levels + quests + sprites).
+## At A Glance 
+When you press Generate, it produces a **new playable run** (levels + quests + sprites).
 
 | Part | Where it comes from | What your prompt affects |
 | --- | --- | --- |
