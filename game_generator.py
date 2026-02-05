@@ -3341,9 +3341,15 @@ HTML = '''
             border: 1px solid rgba(255,255,255,0.1);
         }
         label { display: block; margin-bottom: 8px; color: #4ade80; font-weight: bold; }
-        input, textarea {
+        input[type="password"], input[type="text"], input[type="number"], textarea {
             width: 100%; padding: 12px; border: 2px solid #333;
             border-radius: 8px; background: #0f0f23; color: white; font-size: 15px;
+        }
+        input[type="checkbox"] {
+            width: auto;
+            padding: 0;
+            margin: 0;
+            accent-color: #4ade80;
         }
         input:focus, textarea:focus { border-color: #4ade80; outline: none; }
         textarea { height: 80px; resize: none; }
@@ -3499,12 +3505,13 @@ HTML = '''
         <div id="status" class="status" style="display:none;"></div>
         
         <div class="card features">
-            <b>✨ v7 - Clean & Simple:</b><br>
-            • High‑quality 32‑bit pixel art style<span class="new">NEW</span><br>
-            • Varied quests per level<span class="new">NEW</span><br>
-            • Richer environments + decor<span class="new">NEW</span><br>
-            • Day/night based on your prompt<br>
-            • Peaceful exploration (no combat)<br>
+            <b>✨ How Generation Works:</b><br>
+            • Your prompt drives the setting (biome, time of day, vibe) and biases the map layout + decor<br>
+            • Each level gets exactly one goal type: cure, key+door, lost item, or repair bridge<br>
+            • Pick goals in the UI, or write directives like <code>Level 2: repair_bridge</code> in your prompt<br>
+            • Prompt goal directives override UI selections for that same level<br>
+            • If you check multiple goals under a level, the generator randomly picks one of them for that level<br>
+            • Generate Random Prompt only samples from supported biomes/times/layouts/goals so it always stays valid<br>
         </div>
     </div>
     
