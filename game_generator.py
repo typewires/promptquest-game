@@ -95,31 +95,37 @@ def _looks_like_princess(npc: dict) -> bool:
     return ("princess" in name) or ("princess" in desc)
 
 
-def parse_level_goal_overrides(prompt: str) -> dict[int, str]:
+def parse_level_goal_overrides(prompt: str) -> dict[int, list[str]]:
     """
     Parse prompt directives like:
       "Level 1: cure"
       "level2 - key_and_door"
-    Returns {1: "cure", 2: "key_and_door", ...} (1-based levels).
+      "Level 3: cure, lost_item"
+    Returns {1: ["cure"], 2: ["key_and_door"], 3: ["cure", "lost_item"], ...} (1-based levels).
     """
     if not prompt:
         return {}
-    out: dict[int, str] = {}
+    out: dict[int, list[str]] = {}
     p = str(prompt)
     import re
 
-    # Match: level 1: cure  /  level2 - key_and_door
-    pat = re.compile(
-        r"(?i)\\blevel\\s*([1-3])\\s*[:\\-]\\s*\\b(cure|key_and_door|lost_item|repair_bridge)\\b"
-    )
+    # Match: "level 1: cure, lost_item" or "level2 - key_and_door"
+    # We capture the remainder and then extract allowed goal tokens in order.
+    pat = re.compile(r"(?im)\\blevel\\s*([1-3])\\s*[:\\-]\\s*(.+)$")
     for m in pat.finditer(p):
         try:
             idx = int(m.group(1))
         except Exception:
             continue
-        gt = normalize_goal_type(m.group(2))
-        if idx and gt:
-            out[idx] = gt
+        remainder = str(m.group(2) or "")
+        found = re.findall(r"(?i)\\b(cure|key_and_door|lost_item|repair_bridge)\\b", remainder)
+        opts: list[str] = []
+        for raw in found:
+            gt = normalize_goal_type(raw)
+            if gt and gt not in opts:
+                opts.append(gt)
+        if idx and opts:
+            out[idx] = opts
     return out
 
 
@@ -869,11 +875,13 @@ class GameDesigner:
         npc = random.choice([a for a in pool if a != player])
         return player, npc
     
-    def design_game(self, user_prompt: str, quest_type_override: str | None = None) -> dict:
+    def design_game(self, user_prompt: str, quest_plan_override: list[str] | None = None) -> dict:
         global LAST_QUEST_TYPE
         quest_types = list(ALLOWED_GOALS)
-        if quest_type_override in quest_types:
-            quest_type_hint = quest_type_override
+        quest_plan_override = [normalize_goal_type(g) for g in (quest_plan_override or [])]
+        quest_plan_override = [g for g in quest_plan_override if g]
+        if quest_plan_override:
+            quest_type_hint = quest_plan_override[0]
         elif LAST_QUEST_TYPE in quest_types:
             quest_types = [q for q in quest_types if q != LAST_QUEST_TYPE]
             quest_type_hint = random.choice(quest_types)
@@ -881,7 +889,9 @@ class GameDesigner:
             quest_type_hint = random.choice(quest_types)
         LAST_QUEST_TYPE = quest_type_hint
         player_colors, npc_colors = self._pick_distinct_colors()
-        player_arch, npc_arch = self._pick_archetypes(user_prompt, quest_type_hint)
+        # If the plan includes a cure goal, bias archetypes toward an alchemist/healer and a royal patient.
+        archetype_hint = "cure" if (quest_plan_override and "cure" in quest_plan_override) else quest_type_hint
+        player_arch, npc_arch = self._pick_archetypes(user_prompt, archetype_hint)
         design_prompt = f'''Create a peaceful exploration game based on: "{user_prompt}"
 
 Return ONLY JSON:
@@ -976,20 +986,31 @@ RULES:
         
         try:
             game = json.loads(response.strip())
-            return self._normalize_game(game, user_prompt=user_prompt)
+            return self._normalize_game(game, user_prompt=user_prompt, quest_plan_override=quest_plan_override)
         except:
-            return self._normalize_game(self._fallback(user_prompt, quest_type_hint), user_prompt=user_prompt)
+            return self._normalize_game(self._fallback(user_prompt, quest_type_hint), user_prompt=user_prompt, quest_plan_override=quest_plan_override)
 
-    def _normalize_game(self, game: dict, user_prompt: str = "") -> dict:
+    def _normalize_game(self, game: dict, user_prompt: str = "", quest_plan_override: list[str] | None = None) -> dict:
         """Ensure required quest fields exist and sanitize missing data."""
         # Seed used for terrain layout so each level can look distinct but stable.
         if "seed" not in game:
             game["seed"] = random.randint(1, 2_000_000_000)
 
-        quest = game.get("quest", {})
+        quest = game.get("quest") or {}
+
+        # Normalize per-level goal plan.
         allowed = set(ALLOWED_GOALS)
-        if quest.get("type") not in allowed:
-            quest["type"] = random.choice(list(allowed))
+        plan: list[str] = []
+        if quest_plan_override:
+            plan = [g for g in quest_plan_override if g in allowed]
+        if not plan:
+            base = normalize_goal_type(quest.get("type"))
+            plan = [base] if base in allowed else [random.choice(list(allowed))]
+        # Preserve order, remove duplicates.
+        seen: set[str] = set()
+        plan = [g for g in plan if not (g in seen or seen.add(g))]
+        quest["types"] = plan
+        quest["type"] = plan[0]
 
         # Terrain defaults + variety knobs
         hints = extract_env_hints(user_prompt)
@@ -1040,18 +1061,66 @@ RULES:
         if hints.get("time_of_day"):
             game["time_of_day"] = hints["time_of_day"]
 
-        # Ensure items
-        items = quest.get("items") or game.get("items") or []
-        if not items:
-            items = [
-                {"id": "item1", "name": "Herb", "sprite_desc": "small healing herb", "x": 10, "y": 3},
-                {"id": "item2", "name": "Bloom", "sprite_desc": "glowing flower bud", "x": 12, "y": 6},
-                {"id": "item3", "name": "Dew", "sprite_desc": "tiny vial of dew", "x": 7, "y": 9},
-            ]
-        quest["items"] = items
+        # Build pickups and per-goal assets without clobbering other goals.
+        # We keep a single world pickup list (quest["items"]) and tag each item with a kind.
+        raw_items = quest.get("items") or game.get("items") or []
+        if not isinstance(raw_items, list):
+            raw_items = []
+        raw_items = [it for it in raw_items if isinstance(it, dict)]
 
-        # Cure quest requirements
-        if quest["type"] == "cure":
+        def _fallback_item(idx: int) -> dict:
+            base = [
+                {"id": "item1", "name": "Crystal Herb", "sprite_desc": "glowing blue herb bundle with bright highlights", "x": 10, "y": 3},
+                {"id": "item2", "name": "Sunleaf", "sprite_desc": "golden leaf with warm glow, crisp silhouette", "x": 12, "y": 6},
+                {"id": "item3", "name": "Moondew", "sprite_desc": "small vial of shimmering dew in clear glass", "x": 7, "y": 9},
+            ]
+            return dict(base[min(idx, len(base) - 1)])
+
+        types = list(quest.get("types") or [])
+
+        cure_items: list[dict] = []
+        if "cure" in types:
+            cure_items = [dict(it) for it in raw_items[:3]] if len(raw_items) >= 3 else []
+            while len(cure_items) < 3:
+                cure_items.append(_fallback_item(len(cure_items)))
+            for i, it in enumerate(cure_items):
+                it.setdefault("id", f"ingredient{i+1}")
+                it["kind"] = "ingredient"
+            quest["cure_items"] = cure_items
+        else:
+            quest.pop("cure_items", None)
+
+        lost_item: dict | None = None
+        if "lost_item" in types:
+            # Prefer a distinct item that is not one of the cure ingredients.
+            candidate = None
+            if raw_items:
+                if "cure" in types and len(raw_items) >= 4:
+                    candidate = raw_items[3]
+                else:
+                    candidate = raw_items[0]
+            lost_item = dict(candidate) if isinstance(candidate, dict) else {
+                "id": "lost_item",
+                "name": "Lost Keepsake",
+                "sprite_desc": "small ornate keepsake with clear silhouette and metallic highlights",
+                "x": 9,
+                "y": 6,
+            }
+            lost_item["id"] = "lost_item"
+            lost_item["kind"] = "lost_item"
+            quest["lost_item"] = lost_item
+        else:
+            quest.pop("lost_item", None)
+
+        # World pickups list: cure ingredients + optional lost item.
+        world_items: list[dict] = []
+        world_items.extend(cure_items)
+        if lost_item:
+            world_items.append(lost_item)
+        quest["items"] = world_items
+
+        # Cure goal requirements
+        if "cure" in types:
             # Force "sick" visuals for the NPC, and a clear healed variant.
             npc = game.get("npc", {})
             base_desc = npc.get("sprite_desc", "fantasy NPC")
@@ -1066,17 +1135,6 @@ RULES:
                 npc["sprite_desc"] = base_desc
             if npc and "sick" not in (npc.get("sprite_desc", "").lower()):
                 npc["sprite_desc"] = base_desc + ". They look sick: pale skin, tired eyes, slumped posture, wrapped in a blanket or holding a stomach, with faint sweat."
-            if len(quest["items"]) < 3:
-                base = quest["items"][0]
-                while len(quest["items"]) < 3:
-                    idx = len(quest["items"]) + 1
-                    quest["items"].append({
-                        "id": f"item{idx}",
-                        "name": f"{base['name']} {idx}",
-                        "sprite_desc": base["sprite_desc"],
-                        "x": random.randint(1, 14),
-                        "y": random.randint(1, 10),
-                    })
             if not quest.get("mix_station"):
                 quest["mix_station"] = {"name": "Cauldron", "sprite_desc": "small iron cauldron with green liquid", "x": 9, "y": 5}
             if not quest.get("npc_healed_sprite_desc"):
@@ -1085,54 +1143,65 @@ RULES:
                 if Config.FORCE_CURE_PRINCESS and "princess" not in healed_base.lower():
                     healed_base = f"princess in elegant dress with crown. {healed_base}"
                 quest["npc_healed_sprite_desc"] = f"{healed_base}, now healthy and smiling with brighter colors and a relaxed posture"
-            # Make the objective explicit (override vague AI text).
-            npc_name = game.get("npc", {}).get("name") or "the sick NPC"
-            quest["goal"] = f"Heal {npc_name}"
+        else:
+            quest.pop("mix_station", None)
+            quest.pop("npc_healed_sprite_desc", None)
 
         # Key and door requirements
-        if quest["type"] == "key_and_door":
+        if "key_and_door" in types:
             if not quest.get("chest"):
                 quest["chest"] = {"name": "Old Chest", "sprite_desc": "wooden treasure chest with metal trim", "x": 12, "y": 4}
             if not quest.get("key"):
                 quest["key"] = {"name": "Old Key", "sprite_desc": "antique brass key with ornate teeth"}
             if not quest.get("door"):
                 quest["door"] = {"name": "Locked Door", "sprite_desc": "stone doorway with iron bands", "x": 14, "y": 6}
-
-        # Lost item requirements
-        if quest["type"] == "lost_item":
-            if len(quest["items"]) > 1:
-                quest["items"] = [quest["items"][0]]
+        else:
+            quest.pop("chest", None)
+            quest.pop("key", None)
+            quest.pop("door", None)
 
         # Repair bridge quest requirements
-        if quest["type"] == "repair_bridge":
-            quest["items"] = [
+        if "repair_bridge" in types:
+            quest["repair_materials"] = [
                 {
                     "id": "planks",
                     "name": "Bridge Planks",
                     "sprite_desc": "stack of sturdy wooden bridge planks, slightly weathered, strapped with twine",
-                    "x": 0,
-                    "y": 0,
                 },
                 {
                     "id": "rope",
                     "name": "Hemp Rope Coil",
                     "sprite_desc": "thick coil of hemp rope with a knot, tan color, rugged fibers",
-                    "x": 0,
-                    "y": 0,
                 },
                 {
                     "id": "nails",
                     "name": "Iron Nails",
                     "sprite_desc": "small pouch of iron nails with a few nails visible, dark metal sheen",
-                    "x": 0,
-                    "y": 0,
                 },
             ]
-            quest.pop("mix_station", None)
-            quest.pop("npc_healed_sprite_desc", None)
-            quest.pop("chest", None)
-            quest.pop("key", None)
-            quest.pop("door", None)
+        else:
+            quest.pop("repair_materials", None)
+
+        # Combined goal + steps (always consistent with the engine).
+        npc_name = game.get("npc", {}).get("name") or "the NPC"
+        goal_bits: list[str] = []
+        step_bits: list[str] = []
+        if "cure" in types:
+            goal_bits.append(f"Heal {npc_name}")
+            step_bits.extend(["Talk to the patient", "Gather ingredients", "Brew the remedy", "Deliver it to the patient"])
+        if "lost_item" in types:
+            goal_bits.append("Find and return the lost item")
+            step_bits.extend(["Search the area", "Recover the lost item", "Return it to the owner"])
+        if "key_and_door" in types:
+            goal_bits.append("Unlock the sealed door")
+            step_bits.extend(["Open the chest", "Pick up the key", "Unlock the door"])
+        if "repair_bridge" in types:
+            goal_bits.append("Repair the broken bridge")
+            step_bits.extend(["Visit the shop", "Buy planks, rope, and nails", "Repair the bridge"])
+        if goal_bits:
+            quest["goal"] = "Objectives: " + "; ".join(goal_bits)
+        if step_bits:
+            quest["steps"] = step_bits
 
         goal = quest.get("goal", "")
         if (not goal) or (len(goal) < 12) or any(bad in goal.lower() for bad in ["complete", "finish", "win", "quest"]):
@@ -1273,6 +1342,9 @@ class SpriteGenerator:
     def generate_all(self, game: dict, reuse_player_sprite: Image.Image | None = None) -> dict:
         sprites = {}
         quest = game.get("quest", {})
+        quest_types = quest.get("types") or ([quest.get("type")] if quest.get("type") else [])
+        quest_types = [normalize_goal_type(g) for g in quest_types]
+        quest_types = [g for g in quest_types if g]
         items = quest.get("items", [])
         theme = f"{game.get('terrain', {}).get('type', '')} {game.get('time_of_day', 'day')} {game.get('story', '')}"
         
@@ -1341,8 +1413,8 @@ class SpriteGenerator:
         # Reuse additional items by mirroring existing sprites (visual variety comes from placement).
         # This caps image calls while keeping gameplay intact.
 
-        # Quest-specific props
-        if quest.get("type") == "cure":
+        # Quest-specific props (supports stacked goals per level).
+        if "cure" in quest_types:
             print("  Sick NPC...")
             # Use a dedicated sick sprite for clarity in-game.
             npc = game.get("npc", {}) or {}
@@ -1379,7 +1451,7 @@ class SpriteGenerator:
             )
             time.sleep(self.delay)
 
-        if quest.get("type") == "key_and_door":
+        if "key_and_door" in quest_types:
             print("  Chest...")
             chest = quest.get("chest", {})
             baked_chest = _load_baked_sprite("chest")
@@ -1399,8 +1471,8 @@ class SpriteGenerator:
             time.sleep(self.delay)
 
         # Repair materials (used by the shop UI + visuals)
-        if quest.get("type") == "repair_bridge":
-            mats = {it.get("id"): it for it in (quest.get("items") or [])}
+        if "repair_bridge" in quest_types:
+            mats = {it.get("id"): it for it in (quest.get("repair_materials") or [])}
             if "planks" in mats:
                 print("  Planks...")
                 baked_planks = _load_baked_sprite("mat_planks")
@@ -2221,7 +2293,16 @@ class GameEngine:
         ts = self.config.TILE_SIZE
         quest = self.game.get("quest", {})
         self.quest = quest
-        self.quest_type = quest.get("type", "lost_item")
+        self.quest_types = quest.get("types") or ([quest.get("type")] if quest.get("type") else [])
+        self.quest_types = [normalize_goal_type(g) for g in self.quest_types]
+        self.quest_types = [g for g in self.quest_types if g]
+        # Preserve order, remove duplicates.
+        seen: set[str] = set()
+        self.quest_types = [g for g in self.quest_types if not (g in seen or seen.add(g))]
+        if not self.quest_types:
+            self.quest_types = ["lost_item"]
+        # Back-compat: some UI hints still reference a single quest_type.
+        self.quest_type = self.quest_types[0]
 
         # Build collision map (outdoor) early so we can place buildings safely.
         self.solid_outdoor = self.terrain.get_solid_tiles()
@@ -2236,7 +2317,7 @@ class GameEngine:
         # Repair bridge state
         self.bridge_repaired = False
         self.bridge_tiles = set()
-        if self.quest_type == "repair_bridge":
+        if "repair_bridge" in self.quest_types:
             bx = self.config.MAP_WIDTH // 2
             by = self.config.MAP_HEIGHT // 2
             self.bridge_tiles = {(bx, by), (bx, by + 1)}
@@ -2254,8 +2335,8 @@ class GameEngine:
             {"id": "rope", "name": "Hemp Rope Coil", "price": 15},
             {"id": "nails", "name": "Iron Nails (pouch)", "price": 10},
         ]
-        # If this run isn't a bridge repair, make shop items more general-purpose flavor.
-        if self.quest_type != "repair_bridge":
+        # If this run doesn't include bridge repair, make shop items more general-purpose flavor.
+        if "repair_bridge" not in self.quest_types:
             shop_goods = [
                 {"id": "torch", "name": "Traveler's Torch", "price": 8},
                 {"id": "bandage", "name": "Bandage Wraps", "price": 6},
@@ -2308,11 +2389,8 @@ class GameEngine:
         self.game_won = False
         self.quest_known = False
 
-        # Quest state
+        # Quest state (stacked goals share a single level; items are world pickups).
         self.items = list(quest.get("items", []))
-        if self.quest_type == "repair_bridge":
-            # Materials come from the shop; no world pickups for this quest.
-            self.items = []
         self.mix_station = quest.get("mix_station")
         self.npc_healed = False
         self.mixed_potion = False
@@ -2328,6 +2406,7 @@ class GameEngine:
         self.key_pos = None
 
         self.lost_item_found = False
+        self.lost_item_returned = False
 
         for b in self.buildings:
             self.solid_outdoor.add((b["entrance"][0], b["entrance"][1]))
@@ -2339,11 +2418,11 @@ class GameEngine:
         # Add solid objects
         npc = self.game["npc"]
         self.solid.add((npc["x"], npc["y"]))
-        if self.mix_station:
+        if ("cure" in self.quest_types) and self.mix_station:
             self.solid.add((self.mix_station["x"], self.mix_station["y"]))
-        if self.chest and not self.chest_opened:
+        if ("key_and_door" in self.quest_types) and self.chest and not self.chest_opened:
             self.solid.add((self.chest["x"], self.chest["y"]))
-        if self.door and not self.door_opened:
+        if ("key_and_door" in self.quest_types) and self.door and not self.door_opened:
             self.solid.add((self.door["x"], self.door["y"]))
 
         # Indoor collision map (set on enter)
@@ -2553,66 +2632,62 @@ class GameEngine:
         return done, total, f"{done}/{total} steps"
 
     def _quest_steps(self):
-        steps = []
-        if self.quest_type == "cure":
-            steps = [
-                ("Find ingredients", len(self.items_collected) >= len(self.items)),
-                ("Mix potion", self.mixed_potion),
-                ("Heal NPC", self.npc_healed),
-            ]
-        elif self.quest_type == "key_and_door":
-            steps = [
-                ("Open the chest", self.chest_opened),
-                ("Pick up the key", self.key_collected),
-                ("Unlock the door", self.door_opened),
-            ]
-        elif self.quest_type == "lost_item":
-            steps = [
-                ("Find the lost item", self.lost_item_found),
-                ("Return to NPC", self.game_won),
-            ]
-        else:
-            steps = [
-                ("Collect items", len(self.items_collected) >= len(self.items)),
-                ("Talk to NPC", self.game_won),
-            ]
+        # Render a compact view of the same underlying step state list.
+        steps = self._quest_step_states()
         return [("✓ " if done else "→ ") + label for label, done in steps]
+
+    def _all_goals_complete(self) -> bool:
+        """Return True if every selected goal type for this level has been completed."""
+        types = set(getattr(self, "quest_types", []) or [])
+        if "cure" in types and not getattr(self, "npc_healed", False):
+            return False
+        if "lost_item" in types and not getattr(self, "lost_item_returned", False):
+            return False
+        if "key_and_door" in types and not getattr(self, "door_opened", False):
+            return False
+        if "repair_bridge" in types and not getattr(self, "bridge_repaired", False):
+            return False
+        return True
 
     def _quest_step_states(self):
         npc_name = self.game.get("npc", {}).get("name", "NPC")
-        if self.quest_type == "cure":
-            return [
-                (f"Talk to {npc_name}", self.talked_to_npc),
-                ("Gather ingredients", len(self.items_collected) >= len(self.items)),
-                ("Brew the remedy", self.mixed_potion),
-                ("Deliver the remedy", self.potion_given or self.npc_healed),
-                ("See them recover", self.npc_healed),
-            ]
-        if self.quest_type == "key_and_door":
-            return [
-                (f"Talk to {npc_name}", self.talked_to_npc),
-                ("Open the chest", self.chest_opened),
-                ("Pick up the key", self.key_collected),
-                ("Unlock the door", self.door_opened),
-                ("Step through", self.game_won),
-            ]
-        if self.quest_type == "lost_item":
-            return [
-                (f"Talk to {npc_name}", self.talked_to_npc),
-                ("Search the area", self.lost_item_found),
-                ("Return the item", self.game_won),
-            ]
-        if self.quest_type == "repair_bridge":
-            return [
-                (f"Talk to {npc_name}", self.talked_to_npc),
+        types = list(getattr(self, "quest_types", []) or [])
+        steps: list[tuple[str, bool]] = []
+        steps.append((f"Talk to {npc_name}", getattr(self, "talked_to_npc", False)))
+
+        # Cure
+        if "cure" in types:
+            ingredient_ids = [it["id"] for it in self.items if str(it.get("kind") or "").lower() == "ingredient"]
+            have = sum(1 for iid in ingredient_ids if iid in self.items_collected)
+            steps.extend([
+                ("Gather ingredients", (not ingredient_ids) or (have >= len(ingredient_ids))),
+                ("Brew the remedy", getattr(self, "mixed_potion", False)),
+                ("Heal the patient", getattr(self, "npc_healed", False)),
+            ])
+
+        # Lost item
+        if "lost_item" in types:
+            steps.extend([
+                ("Find the lost item", getattr(self, "lost_item_found", False)),
+                ("Return it to NPC", getattr(self, "lost_item_returned", False)),
+            ])
+
+        # Key and door
+        if "key_and_door" in types:
+            steps.extend([
+                ("Open the chest", getattr(self, "chest_opened", False)),
+                ("Pick up the key", getattr(self, "key_collected", False)),
+                ("Unlock the door", getattr(self, "door_opened", False)),
+            ])
+
+        # Repair bridge
+        if "repair_bridge" in types:
+            steps.extend([
                 ("Buy planks, rope, nails", self.has_materials()),
                 ("Repair the bridge", getattr(self, "bridge_repaired", False)),
-                ("Cross to the far side", self.game_won),
-            ]
-        return [
-            (f"Talk to {npc_name}", self.talked_to_npc),
-            ("Complete the objective", self.game_won),
-        ]
+            ])
+
+        return steps
 
     def _quest_summary(self):
         goal = self.quest.get("goal", "Complete the quest") if hasattr(self, "quest") else "Complete the quest"
@@ -2785,15 +2860,22 @@ class GameEngine:
                 self.items_collected.add(item["id"])
                 self.inventory.append(item["name"])
                 self.effects.pickup(self.player_x + ts//2, self.player_y + ts//2)
-                if self.quest_type == "lost_item":
+                kind = str(item.get("kind") or "").lower()
+                if kind == "lost_item":
                     self.lost_item_found = True
-                if self.quest_type == "cure" and len(self.items_collected) >= len(self.items):
-                    self.msg("All ingredients found! Mix at the cauldron.")
+
+                if kind == "ingredient":
+                    ingredient_ids = [it["id"] for it in self.items if str(it.get("kind") or "").lower() == "ingredient"]
+                    have = sum(1 for iid in ingredient_ids if iid in self.items_collected)
+                    if ingredient_ids and have >= len(ingredient_ids):
+                        self.msg("All ingredients found! Mix at the cauldron.")
+                    else:
+                        self.msg(f"Found {item['name']}! ({have}/{len(ingredient_ids)} ingredients)")
                 else:
                     self.msg(f"Found {item['name']}!")
 
         # Key pickup (for key_and_door quest)
-        if self.quest_type == "key_and_door" and self.key_spawned and not self.key_collected and self.key_pos:
+        if ("key_and_door" in getattr(self, "quest_types", [])) and self.key_spawned and not self.key_collected and self.key_pos:
             if self.key_pos[0] == px and self.key_pos[1] == py:
                 self.key_collected = True
                 key_name = self.key.get("name", "Key") if self.key else "Key"
@@ -2851,44 +2933,39 @@ class GameEngine:
         
         npc = self.game["npc"]
         if abs(npc["x"] - px) <= 1 and abs(npc["y"] - py) <= 1:
-            if self.quest_type == "cure":
-                if self.npc_healed:
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Thank you!")}"')
-                elif self.mixed_potion:
+            did_progress = False
+
+            if not self.talked_to_npc:
+                self.talked_to_npc = True
+
+            # Cure completion happens at the patient (NPC) after mixing the potion.
+            if ("cure" in self.quest_types) and (not self.npc_healed):
+                if self.mixed_potion:
                     self.potion_given = True
                     self.npc_healed = True
-                    self.game_won = True
+                    did_progress = True
                     self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
                     self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "I feel better!")}"')
-                    self._level_complete()
-                elif len(self.items_collected) >= len(self.items):
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_progress", "Mix the potion at the cauldron!")}"')
-                elif self.talked_to_npc:
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_hint", "Please find the ingredients...")}"')
-                else:
-                    self.talked_to_npc = True
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_intro", "I'm not feeling well...")}"')
-            elif self.quest_type == "lost_item":
-                if self.game_won:
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Thank you!")}"')
-                elif self.lost_item_found:
-                    self.game_won = True
+
+            # Lost item return happens at the NPC.
+            if ("lost_item" in self.quest_types) and (not self.lost_item_returned):
+                if self.lost_item_found:
+                    self.lost_item_returned = True
+                    did_progress = True
                     self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
                     self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "You found it!")}"')
-                    self._level_complete()
-                elif self.talked_to_npc:
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_hint", "Have you seen it?")}"')
-                else:
-                    self.talked_to_npc = True
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_intro", "I lost something...")}"')
-            else:
-                if self.game_won:
+
+            if not did_progress:
+                if self._all_goals_complete():
                     self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Well done!")}"')
-                elif self.talked_to_npc:
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_hint", "Try the chest.")}"')
                 else:
-                    self.talked_to_npc = True
-                    self.msg(f'{npc["name"]}: "{npc.get("dialogue_intro", "There's a key hidden nearby.")}"')
+                    # Default guidance: use the next incomplete step label.
+                    nxt = self._next_step_label()
+                    hint = npc.get("dialogue_hint", "")
+                    line = hint if hint else f"Next: {nxt}"
+                    intro = npc.get("dialogue_intro", "Hello, traveler.")
+                    self.msg(f'{npc["name"]}: "{intro} {line}"')
+
             if not self.quest_known:
                 self.quest_known = True
                 summary = self._quest_summary()
@@ -2897,7 +2974,12 @@ class GameEngine:
                     msg = f"{parts[0].strip()}\nSteps: {parts[1].strip()}"
                 else:
                     msg = summary
-                self.msg(msg[:150])
+                self.msg(msg[:160])
+
+            # If that interaction completed the final objective, end the level.
+            if did_progress and self._all_goals_complete():
+                self.game_won = True
+                self._level_complete()
             return
 
         # Indoor interactions (inn sleeping)
@@ -2923,8 +3005,8 @@ class GameEngine:
                         self.msg(f"You lie down... zzz (-{price}g). (SPACE to wake)")
                         return
 
-        # Bridge interaction (repair_bridge quest)
-        if self.quest_type == "repair_bridge" and self.bridge_tiles:
+        # Bridge interaction (repair_bridge goal)
+        if ("repair_bridge" in self.quest_types) and self.bridge_tiles:
             # If you're adjacent to the bridge, you can repair it.
             for bx, by in self.bridge_tiles:
                 if abs(bx - px) <= 1 and abs(by - py) <= 1:
@@ -2943,25 +3025,31 @@ class GameEngine:
                         self.solid_outdoor.discard(t)
                     self.solid = self.solid_outdoor
                     self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
-                    self.msg("Repaired the bridge! Cross to the far side.")
+                    self.msg("Repaired the bridge!")
+                    if self._all_goals_complete():
+                        self.game_won = True
+                        self._level_complete()
                     return
 
-        # Mix station interaction (cure quest)
-        if self.quest_type == "cure" and self.mix_station:
+        # Mix station interaction (cure goal)
+        if ("cure" in self.quest_types) and self.mix_station:
             if abs(self.mix_station["x"] - px) <= 1 and abs(self.mix_station["y"] - py) <= 1:
                 if self.mixed_potion:
                     self.msg("The potion is ready.")
-                elif len(self.items_collected) >= len(self.items):
-                    self.mixed_potion = True
-                    self.inventory.append("Healing Potion")
-                    self.effects.smoke(self.mix_station["x"] * ts + ts//2, self.mix_station["y"] * ts + ts//2)
-                    self.msg("Quest update: potion mixed.")
                 else:
-                    self.msg("Need more ingredients.")
+                    ingredient_ids = [it["id"] for it in self.items if str(it.get("kind") or "").lower() == "ingredient"]
+                    have = sum(1 for iid in ingredient_ids if iid in self.items_collected)
+                    if ingredient_ids and have >= len(ingredient_ids):
+                        self.mixed_potion = True
+                        self.inventory.append("Healing Potion")
+                        self.effects.smoke(self.mix_station["x"] * ts + ts//2, self.mix_station["y"] * ts + ts//2)
+                        self.msg("Quest update: potion mixed.")
+                    else:
+                        self.msg("Need more ingredients.")
                 return
 
-        # Chest / Key / Door interactions (key_and_door quest)
-        if self.quest_type == "key_and_door" and self.chest:
+        # Chest / Key / Door interactions (key_and_door goal)
+        if ("key_and_door" in self.quest_types) and self.chest:
             if abs(self.chest["x"] - px) <= 1 and abs(self.chest["y"] - py) <= 1:
                 if not self.chest_opened:
                     self.chest_opened = True
@@ -2974,17 +3062,18 @@ class GameEngine:
                     self.msg("The chest is empty.")
                 return
 
-        if self.quest_type == "key_and_door" and self.door:
+        if ("key_and_door" in self.quest_types) and self.door:
             if abs(self.door["x"] - px) <= 1 and abs(self.door["y"] - py) <= 1:
                 if self.door_opened:
                     self.msg("The door is open.")
                 elif self.key_collected:
                     self.door_opened = True
-                    self.game_won = True
                     self.solid.discard((self.door["x"], self.door["y"]))
                     self.effects.complete(self.player_x + ts//2, self.player_y + ts//2)
                     self.msg("Quest update: door unlocked!")
-                    self._level_complete()
+                    if self._all_goals_complete():
+                        self.game_won = True
+                        self._level_complete()
                 else:
                     self.msg("The door is locked.")
                 return
@@ -3072,21 +3161,21 @@ class GameEngine:
                     sprite = "mat_nails"
                 self._blit_sprite(sprite, gx, gy, (ox, oy))
 
-        # Draw key (for key_and_door quest)
-        if self.quest_type == "key_and_door" and self.key_spawned and not self.key_collected and self.key_pos:
+        # Draw key (key_and_door goal)
+        if ("key_and_door" in self.quest_types) and self.key_spawned and not self.key_collected and self.key_pos:
             ox, oy = self._float_offset("key")
             self._blit_sprite("key", self.key_pos[0], self.key_pos[1], (ox, oy))
         
         # Draw chest
-        if self.chest and not self.chest_opened:
+        if ("key_and_door" in self.quest_types) and self.chest and not self.chest_opened:
             self._blit_sprite("chest", self.chest["x"], self.chest["y"])
 
         # Draw door
-        if self.door and not self.door_opened:
+        if ("key_and_door" in self.quest_types) and self.door and not self.door_opened:
             self._blit_sprite("door", self.door["x"], self.door["y"])
 
         # Draw mix station
-        if self.mix_station:
+        if ("cure" in self.quest_types) and self.mix_station:
             self._blit_sprite("mix_station", self.mix_station["x"], self.mix_station["y"])
 
         # Draw building entrance markers (outdoor)
@@ -3114,7 +3203,7 @@ class GameEngine:
         
         # Draw NPC
         npc = self.game["npc"]
-        if self.quest_type == "cure" and not self.npc_healed and self.surfaces.get("npc_sick"):
+        if ("cure" in self.quest_types) and (not self.npc_healed) and self.surfaces.get("npc_sick"):
             npc_base = "npc_sick"
         else:
             npc_base = "npc_healed" if self.npc_healed and self.surfaces.get("npc_healed") else "npc"
@@ -3269,7 +3358,7 @@ class GameEngine:
                 self.screen.blit(self.font_large.render(b.get("name", "Shop").upper(), True, (150, 255, 220)), (x, y))
                 y += 26
                 hint = "Press 1/2/3 to buy items."
-                if self.quest_type == "repair_bridge":
+                if "repair_bridge" in self.quest_types:
                     hint = "Buy materials to repair the broken bridge. Press 1/2/3 to buy."
                 elif b.get("theme") == "inn":
                     hint = "Inn: sleep by a bed (SPACE) to advance time. 1/2/3 buy snacks."
@@ -3436,7 +3525,7 @@ HTML = '''
             <div class="levels" style="margin-top:10px; display:block">
                 <label style="margin:0; color:#22d3ee;">Goals (per level, optional)</label>
                 <div style="color:#888; font-size:12px; margin-top:6px">
-                    Pick goal options under each level. If you leave a level blank, it will be randomized.
+                    Pick goal options under each level. If you select multiple goals for a level, they will be stacked. If you leave a level blank, it will be randomized.
                 </div>
                 <div style="display:flex; gap:10px; margin-top:8px">
                     <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Auto Goals</button>
@@ -3507,10 +3596,10 @@ HTML = '''
         <div class="card features">
             <b>✨ How Generation Works:</b><br>
             • Your prompt drives the setting (biome, time of day, vibe) and biases the map layout + decor<br>
-            • Each level gets exactly one goal type: cure, key+door, lost item, or repair bridge<br>
+            • Each level can stack multiple goal types (cure, key+door, lost item, repair bridge). You must complete all selected goals for that level.<br>
             • Pick goals in the UI, or write directives like <code>Level 2: repair_bridge</code> in your prompt<br>
             • Prompt goal directives override UI selections for that same level<br>
-            • If you check multiple goals under a level, the generator randomly picks one of them for that level<br>
+            • If you check multiple goals under a level, those goals are stacked together for that level<br>
             • Generate Random Prompt only samples from supported biomes/times/layouts/goals so it always stays valid<br>
         </div>
     </div>
@@ -3694,29 +3783,38 @@ def generate():
 
         all_goals = list(ALLOWED_GOALS)
         used: list[str] = []
-        quest_types: list[str] = []
+        quest_plans: list[list[str]] = []
         inferred_first = infer_goal_from_prompt(prompt)
 
         for lvl in range(1, level_count + 1):
             # Priority: explicit prompt override > UI options > inferred first-level > random.
             forced = overrides.get(lvl)
             if forced:
-                quest_types.append(forced)
-                used.append(forced)
+                plan = list(forced)
+                quest_plans.append(plan)
+                used.extend([g for g in plan if g not in used])
                 continue
 
-            pool = ui_by_level.get(lvl, []) or all_goals
-            # Level 1 inference only matters if it’s in the pool.
-            if lvl == 1 and inferred_first in pool:
-                quest_types.append(inferred_first)
-                used.append(inferred_first)
+            pool = ui_by_level.get(lvl, [])
+            if pool:
+                # Goal stacking: if multiple goals are checked for a level, you play all of them.
+                plan = list(pool)
+                quest_plans.append(plan)
+                used.extend([g for g in plan if g not in used])
                 continue
 
-            # Avoid repeats if possible.
-            candidates = [g for g in pool if g not in used] or list(pool)
+            if lvl == 1 and inferred_first:
+                quest_plans.append([inferred_first])
+                if inferred_first not in used:
+                    used.append(inferred_first)
+                continue
+
+            # Random fallback for this level (avoid repeats if possible).
+            candidates = [g for g in all_goals if g not in used] or list(all_goals)
             pick = random.choice(candidates)
-            quest_types.append(pick)
-            used.append(pick)
+            quest_plans.append([pick])
+            if pick not in used:
+                used.append(pick)
 
         base_player = None
         base_player_sprite = None
@@ -3724,8 +3822,12 @@ def generate():
         reuse_inn_npc = None
 
         for i in range(level_count):
-            level_prompt = data['prompt'] if i == 0 else f"{data['prompt']} -- New area {i+1} with different terrain, new NPC, and a new quest."
-            game = designer.design_game(level_prompt, quest_type_override=quest_types[i])
+            level_prompt = (
+                data["prompt"]
+                if i == 0
+                else f"{data['prompt']} -- New area {i+1} with different terrain, new NPC, and new objectives."
+            )
+            game = designer.design_game(level_prompt, quest_plan_override=quest_plans[i])
             if base_player is None:
                 base_player = game["player"]
             else:
