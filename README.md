@@ -1,7 +1,5 @@
 # PromptQuest
-
-PromptQuest is an AI-driven content generator that outputs a playable mini-RPG as its artifact.
-The game exists to validate the generator, not as a standalone game product.
+PromptQuest is an AI-driven content generator whose output is a playable mini-RPG. The game is not the product. It exists to validate the generator. Each generated game functions as a test harness and a concrete artifact demonstrating that the system works. The focus is the generation system and the properties it is designed to have. PromptQuest treats generation as an engineering problem, using a pipeline that reliably transforms an underspecified prompt into a complete, playable run.
 
 ## What This Project Is / Is Not
 
