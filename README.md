@@ -1,5 +1,9 @@
 # PromptQuest
-PromptQuest is an AI-driven content generator whose output is a playable mini-RPG. The game is not the product. It exists to validate the generator. Each generated game functions as a test harness and a concrete artifact demonstrating that the system works. The focus is the generation system and the properties it is designed to have. PromptQuest treats generation as an engineering problem, using a pipeline that reliably transforms an underspecified prompt into a complete, playable run.
+PromptQuest is an AI-driven content generator whose output is a playable mini-RPG.
+The game is not the product. It exists to validate the generator.
+
+Each generated game is a test harness and a concrete artifact proving the system works.
+The focus is the generation pipeline and the properties it is designed to have: reliability, controllability, and cost-aware iteration from an underspecified prompt.
 
 ## What This Project Is / Is Not
 
@@ -23,7 +27,7 @@ Under the hood it’s a **Python** project:
 - A tiny **Flask** web UI for entering your prompt + key and generating content
 - A **Pygame** client that runs the actual game loop and rendering
 
-Early versions generated nearly everything via AI. To keep the project practical and affordable to run, the generator now bakes a small set of core sprites and reuses them (including the shopkeeper, innkeeper, and the princess sick/healed cure pair), while continuing to generate the rest of the experience so that no two runs are exactly the same.
+Early versions generated nearly everything via AI. To keep the project practical and affordable to run, the generator now bakes a small set of core sprites and reuses them (including the shopkeeper, innkeeper, and the princess sick/healed cure pair), while continuing to generate the rest of the run so that no two runs are exactly the same.
 
 ## Quick Start
 
@@ -95,6 +99,7 @@ What you’ll typically get (varies run-to-run):
 - `WASD` / Arrow keys: Move
 - `SPACE`: Interact (talk, open, pick up, use)
 - `1`, `2`, `3`: Buy options in shops (when you’re inside a shop)
+- `N` / `ENTER`: Next level (after level objective is complete)
 - `R`: Restart / replay the same generated run (after finishing the last level)
 - `ESC`: Quit
 
