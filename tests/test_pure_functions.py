@@ -329,6 +329,14 @@ class TestBuildQuestPlans:
         # With only cure-related hints, each unspecified level should include cure.
         assert all("cure" in level for level in plans)
 
+    def test_ui_repair_bridge_selection_applies_directly(self):
+        plans = gg.build_quest_plans(
+            prompt="a calm world",
+            by_level_raw=[["repair_bridge"], [], []],
+            level_count=1,
+        )
+        assert plans == [["repair_bridge"]]
+
 
 # ── _looks_like_princess ─────────────────────────────────────
 

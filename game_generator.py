@@ -3602,7 +3602,10 @@ HTML = '''
             padding: 0;
             margin: 0;
             accent-color: #4ade80;
+            transform: scale(1.12);
+            cursor: pointer;
         }
+        label { cursor: pointer; }
         input:focus, textarea:focus { border-color: #4ade80; outline: none; }
         textarea { height: 80px; resize: none; }
         button {
@@ -3696,11 +3699,17 @@ HTML = '''
                 </select>
                 <span style="color:#888; font-size:12px;">(optional, applies to Level 1 unless Level N Time is set)</span>
             </div>
+            <div style="color:#93a4c0; font-size:12px; margin-top:4px; line-height:1.5">
+                Auto means you are not forcing a value here. Auto lets the generator decide unless the prompt explicitly sets it.
+            </div>
             <button class="rand-btn" onclick="randomPrompt()">🎲 Generate Random Prompt</button>
             <div class="levels">
                 <label style="margin:0; color:#22d3ee;">Levels</label>
                 <input type="number" id="levels" min="1" max="3" value="3" onchange="syncLevelUI()">
                 <span style="color:#888; font-size:12px;">(1-3)</span>
+            </div>
+            <div style="color:#93a4c0; font-size:12px; margin-top:6px; line-height:1.5">
+                If you leave settings unspecified (in prompt or UI), the generator will create them for you automatically.
             </div>
             <div class="levels">
                 <label style="margin:0; color:#22d3ee;">Quality</label>
@@ -3720,7 +3729,7 @@ HTML = '''
                     Each <b>Level N biome</b> dropdown controls that level only.
                 </div>
                 <div style="display:flex; gap:10px; margin-top:8px">
-                    <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Auto Goals</button>
+                    <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Clear Goal Selections</button>
                     <button class="ex-btn" onclick="randomGoals()" style="background:#0b1220">🎲 Randomize Goals</button>
                 </div>
 
@@ -3742,17 +3751,17 @@ HTML = '''
                             </select>
                         </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap">
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL1" value="cure"> Cure
+                            <label for="goal-l1-cure" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l1-cure" type="checkbox" class="goalOptL1" value="cure"> Cure
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL1" value="key_and_door"> Key+Door
+                            <label for="goal-l1-key" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l1-key" type="checkbox" class="goalOptL1" value="key_and_door"> Key+Door
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL1" value="lost_item"> Lost Item
+                            <label for="goal-l1-lost" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l1-lost" type="checkbox" class="goalOptL1" value="lost_item"> Lost Item
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL1" value="repair_bridge"> Repair Bridge
+                            <label for="goal-l1-bridge" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l1-bridge" type="checkbox" class="goalOptL1" value="repair_bridge"> Repair Bridge
                             </label>
                         </div>
                     </div>
@@ -3774,17 +3783,17 @@ HTML = '''
                             </select>
                         </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap">
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL2" value="cure"> Cure
+                            <label for="goal-l2-cure" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l2-cure" type="checkbox" class="goalOptL2" value="cure"> Cure
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL2" value="key_and_door"> Key+Door
+                            <label for="goal-l2-key" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l2-key" type="checkbox" class="goalOptL2" value="key_and_door"> Key+Door
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL2" value="lost_item"> Lost Item
+                            <label for="goal-l2-lost" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l2-lost" type="checkbox" class="goalOptL2" value="lost_item"> Lost Item
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL2" value="repair_bridge"> Repair Bridge
+                            <label for="goal-l2-bridge" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l2-bridge" type="checkbox" class="goalOptL2" value="repair_bridge"> Repair Bridge
                             </label>
                         </div>
                     </div>
@@ -3806,17 +3815,17 @@ HTML = '''
                             </select>
                         </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap">
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL3" value="cure"> Cure
+                            <label for="goal-l3-cure" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l3-cure" type="checkbox" class="goalOptL3" value="cure"> Cure
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL3" value="key_and_door"> Key+Door
+                            <label for="goal-l3-key" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l3-key" type="checkbox" class="goalOptL3" value="key_and_door"> Key+Door
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL3" value="lost_item"> Lost Item
+                            <label for="goal-l3-lost" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l3-lost" type="checkbox" class="goalOptL3" value="lost_item"> Lost Item
                             </label>
-                            <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
-                                <input type="checkbox" class="goalOptL3" value="repair_bridge"> Repair Bridge
+                            <label for="goal-l3-bridge" style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
+                                <input id="goal-l3-bridge" type="checkbox" class="goalOptL3" value="repair_bridge"> Repair Bridge
                             </label>
                         </div>
                     </div>
