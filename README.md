@@ -115,7 +115,7 @@ Maps are procedurally generated from a finite set of biomes, time-of-day palette
 Goal types come from a **fixed allowed set** to keep gameplay reliable. Per level, the goal stack is determined in this order:
 - Prompt directives override the UI for that same level
 - Otherwise, UI checkboxes define the level’s goal stack
-- Otherwise, Level 1 may be inferred from keywords
+- Otherwise, only Level 1 may be inferred from prompt keywords
 - Otherwise, the generator chooses a single goal type for that level
 
 The AI fills in the flavor: names, dialogue, item descriptions, and visual style.
@@ -193,6 +193,11 @@ You can set the same controls in either place:
 - UI: level count, quality, per-level goals, per-level biome, optional global time
 - Prompt: explicit per-level directives plus style instructions
 
+Three valid workflows:
+- Simple prompt only: write a theme/vibe sentence and let the generator pick goals/biomes/details for each level.
+- Manual UI control: select per-level biome and goals in UI, with little or no prompt directives.
+- Fully specified prompt: use per-level directives (`Level N`, `Level N Biome`, `Time`) plus character style notes.
+
 Example prompt with explicit per-level controls:
 
 ```text
@@ -217,6 +222,27 @@ How precedence works:
 Example:
 - UI Level 2 biome = `forest`, but prompt says `Level 2 Biome: snow` → Level 2 uses `snow`.
 - UI leaves Level 3 goals empty, and prompt has no `Level 3:` goal line → Level 3 goals are randomized.
+
+Minimal prompt example (auto-generated details):
+
+```text
+A peaceful mountain kingdom under moonlight with warm inns and old stone roads.
+```
+
+Granular prompt example (manual per-level control):
+
+```text
+A lantern-lit fantasy world with high-detail character portraits.
+Time: night
+Level 1 Biome: snow
+Level 2 Biome: ruins
+Level 3 Biome: beach
+Level 1: cure
+Level 2: lost_item
+Level 3: key_and_door
+Hero look: red scarf alchemist, dark blue coat, satchel.
+NPC look: sick princess in pale gown, healed version should look brighter.
+```
 
 ## Cost / Quality Settings
 The generator UI has a **Quality** dropdown:
