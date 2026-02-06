@@ -139,6 +139,66 @@ def normalize_goal_type(value: str | None) -> str | None:
     return None
 
 
+def build_quest_plans(prompt: str, by_level_raw: list, level_count: int) -> list[list[str]]:
+    """
+    Build a per-level quest plan.
+    Priority per level:
+    1) Explicit prompt override (Level N: ...)
+    2) UI-selected goals for that level (stacking)
+    3) Level 1 inferred goal
+    4) Random fallback goal
+    """
+    level_count = max(1, min(3, int(level_count)))
+    overrides = parse_level_goal_overrides(prompt)
+
+    # Normalize UI selections into 1-based map.
+    ui_by_level: dict[int, list[str]] = {}
+    for i in range(min(3, len(by_level_raw or []))):
+        opts: list[str] = []
+        for raw in (by_level_raw[i] or []):
+            gt = normalize_goal_type(raw)
+            if gt and gt not in opts:
+                opts.append(gt)
+        if opts:
+            ui_by_level[i + 1] = opts
+
+    all_goals = list(ALLOWED_GOALS)
+    used: list[str] = []
+    plans: list[list[str]] = []
+    inferred_first = infer_goal_from_prompt(prompt)
+
+    for lvl in range(1, level_count + 1):
+        forced = overrides.get(lvl)
+        if forced:
+            plan = list(forced)
+            plans.append(plan)
+            used.extend([g for g in plan if g not in used])
+            continue
+
+        pool = ui_by_level.get(lvl, [])
+        if pool:
+            # Goal stacking: if multiple goals are checked for a level, you play all of them.
+            plan = list(pool)
+            plans.append(plan)
+            used.extend([g for g in plan if g not in used])
+            continue
+
+        if lvl == 1 and inferred_first:
+            plans.append([inferred_first])
+            if inferred_first not in used:
+                used.append(inferred_first)
+            continue
+
+        # Random fallback for this level (avoid repeats if possible).
+        candidates = [g for g in all_goals if g not in used] or list(all_goals)
+        pick = random.choice(candidates)
+        plans.append([pick])
+        if pick not in used:
+            used.append(pick)
+
+    return plans
+
+
 def parse_goal_plan(raw: str | None) -> list[str]:
     """
     Parse a comma-separated goal plan like: "cure,key_and_door,lost_item".
@@ -233,7 +293,6 @@ def extract_env_hints(prompt: str) -> dict:
     tod = _match_keywords(p, _TIME_KEYWORDS)
     terrain = _match_keywords(p, _TERRAIN_KEYWORDS)
     layout_style = _match_keywords(p, _LAYOUT_KEYWORDS)
-
     tags = {k for k in _THEME_TAG_KEYWORDS if k in p}
     if terrain:
         tags.add(terrain)
@@ -1224,6 +1283,27 @@ class SpriteGenerator:
         if self.client.last_image_was_fallback:
             print(f"    ⚠ fallback sprite for {role}: {self.client.last_image_error}")
         return img
+
+    def _baked_or_gen(self, baked_key: str, desc: str, role: str, theme: str) -> Image.Image:
+        """Load baked sprite when available; otherwise generate it."""
+        baked = _load_baked_sprite(baked_key)
+        return baked if baked is not None else self._gen(desc, role=role, theme=theme)
+
+    def _baked_reuse_or_gen(
+        self,
+        baked_key: str,
+        reuse_img: Image.Image | None,
+        desc: str,
+        role: str,
+        theme: str,
+    ) -> Image.Image:
+        """Load baked sprite first, then reuse, then generate."""
+        baked = _load_baked_sprite(baked_key)
+        if baked is not None:
+            return baked
+        if reuse_img is not None:
+            return reuse_img
+        return self._gen(desc, role=role, theme=theme)
     
     def generate_all(self, game: dict, reuse_player_sprite: Image.Image | None = None) -> dict:
         sprites = {}
@@ -1250,28 +1330,22 @@ class SpriteGenerator:
         reuse_inn = game.get("_reuse_sprites", {}).get("npc_inn")
 
         print("  npc_shop...")
-        baked_shop = _load_baked_sprite("npc_shop")
-        sprites["npc_shop"] = (
-            baked_shop
-            if baked_shop is not None
-            else (reuse_shop if reuse_shop is not None else self._gen(
-                "shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
-                role="npc",
-                theme=theme
-            ))
+        sprites["npc_shop"] = self._baked_reuse_or_gen(
+            baked_key="npc_shop",
+            reuse_img=reuse_shop,
+            desc="shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
+            role="npc",
+            theme=theme,
         )
         time.sleep(self.delay)
 
         print("  npc_inn...")
-        baked_inn = _load_baked_sprite("npc_inn")
-        sprites["npc_inn"] = (
-            baked_inn
-            if baked_inn is not None
-            else (reuse_inn if reuse_inn is not None else self._gen(
-                "innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
-                role="npc",
-                theme=theme
-            ))
+        sprites["npc_inn"] = self._baked_reuse_or_gen(
+            baked_key="npc_inn",
+            reuse_img=reuse_inn,
+            desc="innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
+            role="npc",
+            theme=theme,
         )
         time.sleep(self.delay)
         
@@ -1319,8 +1393,12 @@ class SpriteGenerator:
 
             print("  Mix station...")
             mix = quest.get("mix_station", {})
-            baked_mix = _load_baked_sprite("mix_station")
-            sprites["mix_station"] = baked_mix if baked_mix is not None else self._gen(mix.get("sprite_desc", "small potion cauldron"), role="cauldron", theme=theme)
+            sprites["mix_station"] = self._baked_or_gen(
+                baked_key="mix_station",
+                desc=mix.get("sprite_desc", "small potion cauldron"),
+                role="cauldron",
+                theme=theme,
+            )
             time.sleep(self.delay)
 
             print("  Healed NPC...")
@@ -1340,20 +1418,32 @@ class SpriteGenerator:
         if "key_and_door" in quest_types:
             print("  Chest...")
             chest = quest.get("chest", {})
-            baked_chest = _load_baked_sprite("chest")
-            sprites["chest"] = baked_chest if baked_chest is not None else self._gen(chest.get("sprite_desc", "old wooden chest"), role="chest", theme=theme)
+            sprites["chest"] = self._baked_or_gen(
+                baked_key="chest",
+                desc=chest.get("sprite_desc", "old wooden chest"),
+                role="chest",
+                theme=theme,
+            )
             time.sleep(self.delay)
 
             print("  Key...")
             key = quest.get("key", {})
-            baked_key = _load_baked_sprite("key")
-            sprites["key"] = baked_key if baked_key is not None else self._gen(key.get("sprite_desc", "old brass key"), role="key", theme=theme)
+            sprites["key"] = self._baked_or_gen(
+                baked_key="key",
+                desc=key.get("sprite_desc", "old brass key"),
+                role="key",
+                theme=theme,
+            )
             time.sleep(self.delay)
 
             print("  Door...")
             door = quest.get("door", {})
-            baked_door = _load_baked_sprite("door")
-            sprites["door"] = baked_door if baked_door is not None else self._gen(door.get("sprite_desc", "stone door"), role="door", theme=theme)
+            sprites["door"] = self._baked_or_gen(
+                baked_key="door",
+                desc=door.get("sprite_desc", "stone door"),
+                role="door",
+                theme=theme,
+            )
             time.sleep(self.delay)
 
         # Repair materials (used by the shop UI + visuals)
@@ -1361,18 +1451,30 @@ class SpriteGenerator:
             mats = {it.get("id"): it for it in (quest.get("repair_materials") or [])}
             if "planks" in mats:
                 print("  Planks...")
-                baked_planks = _load_baked_sprite("mat_planks")
-                sprites["mat_planks"] = baked_planks if baked_planks is not None else self._gen(mats["planks"].get("sprite_desc", "stack of wooden planks tied with rope"), role="item", theme=theme)
+                sprites["mat_planks"] = self._baked_or_gen(
+                    baked_key="mat_planks",
+                    desc=mats["planks"].get("sprite_desc", "stack of wooden planks tied with rope"),
+                    role="item",
+                    theme=theme,
+                )
                 time.sleep(self.delay)
             if "rope" in mats:
                 print("  Rope...")
-                baked_rope = _load_baked_sprite("mat_rope")
-                sprites["mat_rope"] = baked_rope if baked_rope is not None else self._gen(mats["rope"].get("sprite_desc", "coiled rope with a knot, tan color"), role="item", theme=theme)
+                sprites["mat_rope"] = self._baked_or_gen(
+                    baked_key="mat_rope",
+                    desc=mats["rope"].get("sprite_desc", "coiled rope with a knot, tan color"),
+                    role="item",
+                    theme=theme,
+                )
                 time.sleep(self.delay)
             if "nails" in mats:
                 print("  Nails...")
-                baked_nails = _load_baked_sprite("mat_nails")
-                sprites["mat_nails"] = baked_nails if baked_nails is not None else self._gen(mats["nails"].get("sprite_desc", "small pouch of iron nails with a few nails visible"), role="item", theme=theme)
+                sprites["mat_nails"] = self._baked_or_gen(
+                    baked_key="mat_nails",
+                    desc=mats["nails"].get("sprite_desc", "small pouch of iron nails with a few nails visible"),
+                    role="item",
+                    theme=theme,
+                )
                 time.sleep(self.delay)
         
         total_calls = len(sprites)
@@ -3598,61 +3700,9 @@ def generate():
         level_count = int(data.get("levels", 3))
         level_count = max(1, min(3, level_count))
 
-        # Pick quest types:
-        # - Prompt can specify per-level goals, e.g. "Level 2: key_and_door".
-        # - UI can specify per-level goal options (stacking) — multiple goals checked under a level means
-        #   "pick one of these for that level".
-        # - If neither prompt nor UI specifies a level, we randomize from all allowed goals.
-        # - We try to avoid repeats across levels until we've exhausted the pool.
         prompt = data.get("prompt", "")
-        overrides = parse_level_goal_overrides(prompt)
         by_level_raw = data.get("goalByLevel") or []
-
-        # Normalize UI selections into 1-based map.
-        ui_by_level: dict[int, list[str]] = {}
-        for i in range(min(3, len(by_level_raw))):
-            opts: list[str] = []
-            for raw in (by_level_raw[i] or []):
-                gt = normalize_goal_type(raw)
-                if gt and gt not in opts:
-                    opts.append(gt)
-            if opts:
-                ui_by_level[i + 1] = opts
-
-        all_goals = list(ALLOWED_GOALS)
-        used: list[str] = []
-        quest_plans: list[list[str]] = []
-        inferred_first = infer_goal_from_prompt(prompt)
-
-        for lvl in range(1, level_count + 1):
-            # Priority: explicit prompt override > UI options > inferred first-level > random.
-            forced = overrides.get(lvl)
-            if forced:
-                plan = list(forced)
-                quest_plans.append(plan)
-                used.extend([g for g in plan if g not in used])
-                continue
-
-            pool = ui_by_level.get(lvl, [])
-            if pool:
-                # Goal stacking: if multiple goals are checked for a level, you play all of them.
-                plan = list(pool)
-                quest_plans.append(plan)
-                used.extend([g for g in plan if g not in used])
-                continue
-
-            if lvl == 1 and inferred_first:
-                quest_plans.append([inferred_first])
-                if inferred_first not in used:
-                    used.append(inferred_first)
-                continue
-
-            # Random fallback for this level (avoid repeats if possible).
-            candidates = [g for g in all_goals if g not in used] or list(all_goals)
-            pick = random.choice(candidates)
-            quest_plans.append([pick])
-            if pick not in used:
-                used.append(pick)
+        quest_plans = build_quest_plans(prompt=prompt, by_level_raw=by_level_raw, level_count=level_count)
 
         base_player = None
         base_player_sprite = None
