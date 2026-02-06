@@ -3609,6 +3609,9 @@ HTML = '''
                 <div style="color:#888; font-size:12px; margin-top:6px">
                     Pick goal options under each level. If you select multiple goals for a level, they are stacked. If a level is blank in both UI and prompt, goals for that level are auto-generated.
                 </div>
+                <div style="color:#7f8da8; font-size:12px; margin-top:4px">
+                    Each <b>Level N biome</b> dropdown controls that level only.
+                </div>
                 <div style="display:flex; gap:10px; margin-top:8px">
                     <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Auto Goals</button>
                     <button class="ex-btn" onclick="randomGoals()" style="background:#0b1220">🎲 Randomize Goals</button>
@@ -3719,14 +3722,13 @@ HTML = '''
         
         <div class="card features">
             <b>✨ How Generation Works:</b><br>
-            • Option A (simple): write only a theme prompt. The generator will create biomes/goals/details for each level automatically.<br>
-            • Option B (manual UI): pick level count, per-level biome, and per-level goals in dropdowns/checkboxes.<br>
-            • Option C (prompt directives): set exact values in text, e.g. <code>Level 2 Biome: snow</code>, <code>Level 1: cure, lost_item</code>, <code>Time: night</code>.<br>
-            • Precedence: prompt directives override UI for the same level/setting. If neither prompt nor UI sets it, it is auto-generated.<br>
-            • If you choose 3 levels but only specify Level 1 values, Level 2 and Level 3 are generated automatically.<br>
-            • You can also describe character look/style in the prompt (hero and NPC appearance).<br>
-            • If you check multiple goals for one level, those goals are stacked and all must be completed.<br>
-            • Random Prompt only samples valid supported values (biomes/times/layouts/goals).<br>
+            • Your prompt sets the world theme (biome/time/vibe) and character style, and can also set exact per-level controls.<br>
+            • You can assign biome per level in prompt (<code>Level 1 Biome: snow</code>) or in UI (<code>Level 1 biome</code>, <code>Level 2 biome</code>, <code>Level 3 biome</code> dropdowns).<br>
+            • You can assign goals per level in prompt (<code>Level 2: repair_bridge</code>) or in UI checkboxes under each level.<br>
+            • If prompt and UI both set the same level value, prompt wins for that level.<br>
+            • If a level is unspecified in both prompt and UI, that level biome/goals are auto-generated.<br>
+            • If you check multiple goals for one level, they are stacked and all must be completed.<br>
+            • Random Prompt samples only valid supported biomes/times/layouts/goals.<br>
         </div>
     </div>
     
