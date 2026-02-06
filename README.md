@@ -256,22 +256,6 @@ Minimal prompt example (auto-generated details):
 A peaceful mountain kingdom under moonlight with warm inns and old stone roads.
 ```
 
-Granular prompt example (manual per-level control):
-
-```text
-A lantern-lit fantasy world with high-detail character portraits.
-Level 1 Time: night
-Level 2 Time: day
-Level 3 Time: sunset
-Level 1 Biome: snow
-Level 2 Biome: ruins
-Level 3 Biome: beach
-Level 1 Quest NPC style: sick princess in pale gown, healed version brighter. goal is cure
-Level 2 Quest NPC style: hooded relic hunter with bronze lantern. goal is lost_item
-Level 3 Quest NPC style: disciplined gate captain in silver cloak. goal is key_and_door
-Hero look: red scarf alchemist, dark blue coat, satchel.
-```
-
 ## Cost / Quality Settings
 The generator UI has a **Quality** dropdown:
 - **Low (cheapest)**: `TEXT_MODEL=gpt-4o-mini`, `IMAGE_MODEL=gpt-image-1` with `quality=low`
