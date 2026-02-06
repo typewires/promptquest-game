@@ -18,9 +18,10 @@ def test_inn_lobby_and_room_have_distinct_collision_layouts():
     lobby_solid = lobby.get_solid_tiles()
     room_solid = room.get_solid_tiles()
 
-    # Lobby has reception/doorway blockers near y=5.
-    assert (2, 5) in lobby_solid
-    assert (5, 5) in lobby_solid
+    # Lobby has reception blockers near y=3 and table blockers in lounge.
+    assert (5, 3) in lobby_solid
+    assert (10, 3) in lobby_solid
+    assert (2, 8) in lobby_solid
     # Room has bed footprint blockers.
     assert (4, 4) in room_solid
     assert (8, 6) in room_solid
@@ -87,4 +88,3 @@ def test_sprite_generator_reuses_shop_and_inn_npcs(monkeypatch):
     assert calls["count"] >= 1
 
     gg.Config.ITEM_SPRITES_PER_LEVEL = old_item_budget
-

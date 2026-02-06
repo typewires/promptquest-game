@@ -1488,13 +1488,12 @@ class SpriteGenerator:
 
     def _baked_scene_or_gen(self, baked_key: str, desc: str, theme: str) -> Image.Image:
         """
-        Scene assets are intended to be prebaked and shared, but we keep a generation fallback
-        so local development is not blocked.
+        Deprecated for gameplay rendering. Kept only for backward compatibility.
         """
         baked = _load_baked_sprite(baked_key)
         if baked is not None:
             return baked
-        return self._gen(desc, role="item", theme=theme)
+        return self._fallback_character("item")
 
     def _baked_reuse_or_gen(
         self,
@@ -1643,31 +1642,8 @@ class SpriteGenerator:
                 ),
             )
 
-        # Fixed scene backdrops (no characters). These should be baked for consistent shared visuals.
-        scene_specs = [
-            (
-                "scene_shop_interior",
-                "Shop scene",
-                "top-down RPG pixel-art alchemy shop interior, no people, no text, no UI, no frame, shelves and counter visible",
-            ),
-            (
-                "scene_inn_lobby",
-                "Inn lobby scene",
-                "top-down RPG pixel-art inn lobby interior, no people, no text, no UI, no frame, front desk, hallway room doors attached to wall, tables and warm lighting",
-            ),
-            (
-                "scene_inn_room",
-                "Inn room scene",
-                "top-down RPG pixel-art cozy inn bedroom, no people, no text, no UI, no frame, bed, fireplace, side table, wardrobe",
-            ),
-        ]
-        for key, label, desc in scene_specs:
-            self._emit_sprite(
-                sprites,
-                key,
-                label,
-                lambda k=key, d=desc: self._baked_scene_or_gen(k, d, "retro-rpg-interior"),
-            )
+        # We intentionally avoid full-scene generated backdrops in runtime rendering.
+        # Interiors are drawn deterministically in engine so interactions always line up.
         
         # Quest items: generate up to N sprites based on Config.ITEM_SPRITES_PER_LEVEL.
         # Remaining items use a baked generic icon (if provided) or reuse the first generated sprite.
@@ -2785,47 +2761,46 @@ class InteriorRenderer:
 
         # Theme decor
         if self.theme in ["shop", "apothecary"]:
-            # Shelves / decor anchored to top/side walls.
-            for x in range(2, self.mw - 2, 4):
-                pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 3 - 12, 12), border_radius=3)
+            # Back wall shelves
+            for x in range(2, self.mw - 2, 3):
+                pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 2 - 10, 10), border_radius=3)
                 # Bottles
                 bx = x * ts + 16
                 by = 2 * ts + 2
                 pygame.draw.rect(screen, self.accent, (bx, by + 14, 10, 14), border_radius=2)
                 pygame.draw.rect(screen, (200, 120, 255), (bx + 22, by + 18, 10, 10), border_radius=2)
                 pygame.draw.rect(screen, (120, 255, 180), (bx + 44, by + 16, 10, 12), border_radius=2)
-                pygame.draw.rect(screen, (255, 210, 120), (bx + 58, by + 12, 8, 16), border_radius=2)
+                pygame.draw.rect(screen, (255, 210, 120), (bx + 60, by + 12, 8, 16), border_radius=2)
 
-            # Main counter
-            cx = self.mw // 2
-            pygame.draw.rect(screen, self.shelf, (cx * ts - ts * 2, 6 * ts, ts * 4, ts), border_radius=6)
-            pygame.draw.rect(screen, (60, 40, 30), (cx * ts - ts * 2 + 10, 6 * ts + 10, ts * 4 - 20, ts - 18), border_radius=6)
+            # Main counter (classic RPG shop)
+            pygame.draw.rect(screen, self.shelf, (4 * ts, 5 * ts, 8 * ts, ts + 6), border_radius=8)
+            pygame.draw.rect(screen, (60, 40, 30), (4 * ts + 10, 5 * ts + 10, 8 * ts - 20, ts - 10), border_radius=6)
             # Rug + side barrels
-            pygame.draw.rect(screen, (84, 96, 142), (cx * ts - ts * 2, 8 * ts, ts * 4, ts * 2), border_radius=10)
-            pygame.draw.rect(screen, (125, 90, 64), (2 * ts - 10, 8 * ts + 8, ts, ts), border_radius=8)
-            pygame.draw.rect(screen, (125, 90, 64), ((self.mw - 3) * ts + 8, 8 * ts + 8, ts, ts), border_radius=8)
+            pygame.draw.rect(screen, (84, 96, 142), (5 * ts, 8 * ts, 6 * ts, ts * 2), border_radius=10)
+            pygame.draw.rect(screen, (125, 90, 64), (2 * ts, 8 * ts + 8, ts, ts), border_radius=8)
+            pygame.draw.rect(screen, (125, 90, 64), ((self.mw - 3) * ts, 8 * ts + 8, ts, ts), border_radius=8)
             # Wall accents
             pygame.draw.rect(screen, (190, 150, 110), (2 * ts, ts + 10, ts, ts // 2), border_radius=4)
             pygame.draw.rect(screen, (130, 170, 210), (self.mw * ts - 3 * ts, ts + 10, ts, ts // 2), border_radius=4)
         elif self.theme in ["inn", "inn_lobby"]:
             # Reception counter near top wall.
-            pygame.draw.rect(screen, self.shelf, (self.mw // 2 * ts - ts * 2, 2 * ts, ts * 4, ts), border_radius=6)
-            pygame.draw.rect(screen, (80, 56, 38), (self.mw // 2 * ts - ts * 2 + 8, 2 * ts + 8, ts * 4 - 16, ts - 14), border_radius=6)
+            pygame.draw.rect(screen, self.shelf, (5 * ts, 3 * ts, 6 * ts, ts), border_radius=6)
+            pygame.draw.rect(screen, (80, 56, 38), (5 * ts + 8, 3 * ts + 8, 6 * ts - 16, ts - 14), border_radius=6)
             pygame.draw.rect(screen, (120, 84, 56), (self.mw // 2 * ts - 40, ts + 12, 80, 18), border_radius=4)
             txt = self._small_font().render("LODGING", True, (245, 228, 180))
             screen.blit(txt, (self.mw // 2 * ts - 32, ts + 15))
-            # Guest room hallway doors with numbers, attached to wall.
-            door_y = 1 * ts
-            hall_xs = [2 * ts, 5 * ts, 8 * ts, 11 * ts]
-            for idx, dx in enumerate(hall_xs, start=1):
-                pygame.draw.rect(screen, (104, 70, 48), (dx, door_y, ts - 12, int(ts * 1.2)), border_radius=6)
+            # Hallway doors attached to upper wall.
+            door_y = ts
+            hall_xs = [6 * ts, 8 * ts, 10 * ts]
+            for idx, dx in enumerate(hall_xs, start=2):
+                pygame.draw.rect(screen, (104, 70, 48), (dx, door_y, ts - 10, int(ts * 1.1)), border_radius=6)
                 pygame.draw.rect(screen, (74, 48, 34), (dx, door_y, ts - 12, int(ts * 1.2)), 2, border_radius=6)
                 num = self._small_font().render(str(idx), True, (240, 230, 200))
                 screen.blit(num, (dx + (ts // 2) - 8, door_y + 4))
 
             # Lounge rugs and tables.
-            pygame.draw.rect(screen, (118, 64, 44), (2 * ts, 8 * ts, ts * 5, ts * 2), border_radius=10)
-            pygame.draw.rect(screen, (94, 52, 36), (9 * ts, 8 * ts, ts * 5, ts * 2), border_radius=10)
+            pygame.draw.rect(screen, (118, 64, 44), (2 * ts, 8 * ts, ts * 4, ts * 2), border_radius=10)
+            pygame.draw.rect(screen, (94, 52, 36), (10 * ts, 8 * ts, ts * 4, ts * 2), border_radius=10)
             for tx in [4 * ts, 11 * ts]:
                 pygame.draw.circle(screen, (120, 84, 56), (tx, 9 * ts), 18)
                 pygame.draw.circle(screen, (90, 62, 44), (tx, 9 * ts), 18, 2)
@@ -2847,7 +2822,6 @@ class InteriorRenderer:
             # Table + mug
             pygame.draw.rect(screen, self.shelf, (self.mw // 2 * ts - ts, 6 * ts, ts * 2, ts), border_radius=6)
             pygame.draw.circle(screen, (240, 210, 120), (self.mw // 2 * ts, 6 * ts + ts // 2), 6)
-            pygame.draw.rect(screen, (255, 255, 255), (self.mw // 2 * ts - 3, 6 * ts + ts // 2 - 3, 6, 6), border_radius=2)
 
             # Rug
             pygame.draw.rect(screen, (120, 60, 40), (self.mw // 2 * ts - ts * 2, 8 * ts, ts * 4, ts * 2), border_radius=10)
@@ -2907,11 +2881,14 @@ class InteriorRenderer:
                 solid.add((x, 4))
             # Table
             solid.add((self.mw // 2, 6))
-            # Reception counter and hallway doors
-            for x in range(self.mw // 2 - 2, self.mw // 2 + 2):
-                solid.add((x, 2))
-            for x in [2, 5, 8, 11]:
-                solid.add((x, 5))
+            # Reception counter
+            for x in range(5, 11):
+                solid.add((x, 3))
+            # Decorative tables
+            for x in range(2, 6):
+                solid.add((x, 8))
+            for x in range(10, 14):
+                solid.add((x, 8))
         elif self.theme == "inn_room":
             # Bed footprint
             for x in range(4, 9):
@@ -3054,7 +3031,7 @@ class GameEngine:
                 self.surfaces[name] = surf
                 self.sprite_offsets[name] = (0, 0)
                 continue
-            if base_name in ["player", "npc", "npc_healed", "npc_shop", "npc_inn", "npc_guest_a", "npc_guest_b"]:
+            if base_name == "player" or base_name.startswith("npc"):
                 scale = 1.75
             elif base_name in ["door"]:
                 scale = 1.5
@@ -3104,6 +3081,7 @@ class GameEngine:
         self.money = 60
         self.sleeping = False
         self.sleep_end_ms = 0
+        self.dialogue_state = {}
 
         # Repair bridge state
         self.bridge_repaired = False
@@ -3146,6 +3124,12 @@ class GameEngine:
                 "theme": "shop",
                 "npc": "Shopkeeper",
                 "dialogue": "Welcome. Potions and herbs are on the shelf.",
+                "smalltalk": [
+                    "Fresh tonics came in at dawn. Desert nights spoil weak brews.",
+                    "If you smell mint and iron, that's my anti-venom batch.",
+                    "Travel light; sandstorms punish anyone carrying junk.",
+                    "I label rare stock in blue glass so nobody confuses it with lamp oil.",
+                ],
                 "entrance": entrance_shop,
                 "exit": (door_x, self.config.MAP_HEIGHT - 1),
                 "npc_pos": (self.config.MAP_WIDTH // 2 + 2, 4),
@@ -3158,6 +3142,12 @@ class GameEngine:
                 "theme": "inn",
                 "npc": "Inn Host",
                 "dialogue": "Welcome traveler. Rooms are 12g per night.",
+                "smalltalk": [
+                    "Mind the boots by the hearth; they belong to caravan guards.",
+                    "The kitchen keeps stew warm until moonrise.",
+                    "Most guests sleep lighter when the wind hits the shutters.",
+                    "If you're headed out early, I can pack tea in a travel flask.",
+                ],
                 "entrance": entrance_inn,
                 "exit": (door_x, self.config.MAP_HEIGHT - 1),
                 "npc_pos": (self.config.MAP_WIDTH // 2, 3),
@@ -3168,6 +3158,24 @@ class GameEngine:
                 "room_exit": (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 1),
                 "room_number": "3",
                 "guest_npcs": [(3, 8), (11, 8)],
+                "guest_profiles": [
+                    {
+                        "name": "Guest Mira",
+                        "lines": [
+                            "The soup is peppery tonight, just how I like it.",
+                            "I trade silk by day and stories by candlelight.",
+                            "The inn piano's out of tune, but nobody minds after supper.",
+                        ],
+                    },
+                    {
+                        "name": "Guest Rowan",
+                        "lines": [
+                            "I count steps between towns. Helps me remember the roads.",
+                            "These floorboards creak less near the back stairs.",
+                            "I've seen three comets from this very window.",
+                        ],
+                    },
+                ],
                 "room_paid": False,
                 "room_unlocked": False,
                 "items": [],
@@ -3424,16 +3432,7 @@ class GameEngine:
         self.screen.blit(txt, (x0 + 18, y0 + ts + 8))
 
     def _indoor_scene_key(self):
-        if not self.current_building:
-            return None
-        theme = self.current_building.get("theme")
-        mode = getattr(self, "indoor_mode", "lobby")
-        if theme == "shop":
-            return "scene_shop_interior"
-        if theme == "inn" and mode == "lobby":
-            return "scene_inn_lobby"
-        if theme == "inn" and mode == "room":
-            return "scene_inn_room"
+        # Scene backdrops are disabled in favor of deterministic in-engine interiors.
         return None
 
     def _draw_indoor_setpieces(self):
@@ -3872,21 +3871,39 @@ class GameEngine:
                                     f"The key unlocks the hall door.' (-{price}g)"
                                 )
                         else:
-                            self.msg(f"{who}: 'Your room {self.current_building.get('room_number', '3')} is down the hall. Sleep well.'")
+                            line = self._next_dialogue_line(
+                                "inn_host_paid",
+                                self.current_building.get("smalltalk", []),
+                            )
+                            self.msg(
+                                f"{who}: 'Your room {self.current_building.get('room_number', '3')} is down the hall. "
+                                f"{line}'"
+                            )
                     else:
-                        line = self.current_building.get("dialogue", "Hello!")
+                        line = self._next_dialogue_line(
+                            "shopkeeper_talk",
+                            self.current_building.get("smalltalk", []) or [self.current_building.get("dialogue", "Hello!")],
+                        )
                         self.msg(f'{who}: "{line}"')
                     return
                 # Inn guest flavor dialogue.
                 if self.current_building.get("theme") == "inn" and self.indoor_mode == "lobby":
                     for i, (gx, gy) in enumerate(self.current_building.get("guest_npcs", []), start=1):
                         if abs(gx - px) <= 1 and abs(gy - py) <= 1:
-                            guest_lines = [
-                                "The stew here is legendary.",
-                                "Roads are safer after dawn.",
-                                "I heard the bridge was fixed by a traveling hero.",
-                            ]
-                            self.msg(f"Guest {i}: '{guest_lines[(i - 1) % len(guest_lines)]}'")
+                            profiles = self.current_building.get("guest_profiles", [])
+                            if profiles and i - 1 < len(profiles):
+                                profile = profiles[i - 1]
+                                gname = profile.get("name", f"Guest {i}")
+                                glines = profile.get("lines", [])
+                            else:
+                                gname = f"Guest {i}"
+                                glines = [
+                                    "The common room feels warmer once the lamps are lit.",
+                                    "I keep my boots by the hearth so they dry by morning.",
+                                    "The innkeeper remembers every regular by name.",
+                                ]
+                            line = self._next_dialogue_line(f"guest_{i}", glines)
+                            self.msg(f"{gname}: '{line}'")
                             return
         
         npc = self.game["npc"]
@@ -3917,12 +3934,14 @@ class GameEngine:
                 if self._all_goals_complete():
                     self.msg(f'{npc["name"]}: "{npc.get("dialogue_complete", "Well done!")}"')
                 else:
-                    # Default guidance: use the next incomplete step label.
-                    nxt = self._next_step_label()
-                    hint = npc.get("dialogue_hint", "")
-                    line = hint if hint else f"Next: {nxt}"
-                    intro = npc.get("dialogue_intro", "Hello, traveler.")
-                    self.msg(f'{npc["name"]}: "{intro} {line}"')
+                    # Rich quest-NPC dialogue with light guidance baked into tone.
+                    qlines = [
+                        npc.get("dialogue_intro", "You made it. I knew you would."),
+                        "Keep your pace steady. Rushing creates mistakes.",
+                        "When in doubt, trust what you've already learned on this road.",
+                        f"If you are unsure, focus on this next step: {self._next_step_label()}.",
+                    ]
+                    self.msg(f'{npc["name"]}: "{self._next_dialogue_line("quest_npc", qlines)}"')
 
             if not self.quest_known:
                 self.quest_known = True
@@ -4043,6 +4062,13 @@ class GameEngine:
     def msg(self, text):
         self.message = text
         self.message_timer = 250
+
+    def _next_dialogue_line(self, key: str, lines: list[str]) -> str:
+        if not lines:
+            return "..."
+        idx = self.dialogue_state.get(key, 0) % len(lines)
+        self.dialogue_state[key] = idx + 1
+        return lines[idx]
     
     def draw(self):
         ts = self.config.TILE_SIZE
@@ -4170,11 +4196,16 @@ class GameEngine:
         else:
             # Indoor NPC uses per-building unique sprite (generated at level creation).
             if self.current_building:
-                nx, ny = self.current_building["npc_pos"]
-                key = self.current_building.get("npc_sprite_key", "npc")
-                if key not in self.surfaces:
-                    key = "npc"
-                self._blit_sprite(key, nx, ny, (0, 0))
+                if self.current_building.get("theme") == "inn" and getattr(self, "indoor_mode", "lobby") == "room":
+                    # Private room mode: no host/guest NPCs inside the bedroom.
+                    nx, ny = None, None
+                else:
+                    nx, ny = self.current_building["npc_pos"]
+                if nx is not None:
+                    key = self.current_building.get("npc_sprite_key", "npc")
+                    if key not in self.surfaces:
+                        key = "npc"
+                    self._blit_sprite(key, nx, ny, (0, 0))
                 # Inn lobby extra NPCs for life.
                 if self.current_building.get("theme") == "inn" and getattr(self, "indoor_mode", "lobby") == "lobby":
                     for i, (gx, gy) in enumerate(self.current_building.get("guest_npcs", []), start=1):
