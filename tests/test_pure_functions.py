@@ -99,6 +99,18 @@ class TestInferGoalFromPrompt:
         assert gg.infer_goal_from_prompt(None) is None
 
 
+# ── infer_goals_from_prompt ──────────────────────────────────
+
+class TestInferGoalsFromPrompt:
+    def test_returns_multiple_goals_when_prompt_contains_multiple_hints(self):
+        goals = gg.infer_goals_from_prompt("heal the sick princess, then find a key for the sealed door")
+        assert "cure" in goals
+        assert "key_and_door" in goals
+
+    def test_returns_empty_for_no_hints(self):
+        assert gg.infer_goals_from_prompt("a calm meadow walk") == []
+
+
 # ── extract_env_hints ────────────────────────────────────────
 
 class TestExtractEnvHints:
@@ -284,8 +296,18 @@ class TestBuildQuestPlans:
         )
         assert len(plans) == 3
         for level in plans:
-            assert len(level) == 1
-            assert level[0] in gg.ALLOWED_GOALS
+            assert 1 <= len(level) <= 2
+            assert all(g in gg.ALLOWED_GOALS for g in level)
+
+    def test_prompt_keyword_inference_applies_to_all_unspecified_levels(self):
+        plans = gg.build_quest_plans(
+            prompt="heal the sick princess",
+            by_level_raw=[[], [], []],
+            level_count=3,
+        )
+        assert len(plans) == 3
+        # With only cure-related hints, each unspecified level should include cure.
+        assert all("cure" in level for level in plans)
 
 
 # ── _looks_like_princess ─────────────────────────────────────

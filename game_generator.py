@@ -193,8 +193,8 @@ def build_quest_plans(prompt: str, by_level_raw: list, level_count: int) -> list
     Priority per level:
     1) Explicit prompt override (Level N: ...)
     2) UI-selected goals for that level (stacking)
-    3) Level 1 inferred goal
-    4) Random fallback goal
+    3) Prompt-inferred goals (all levels)
+    4) Random fallback goal stack
     """
     level_count = max(1, min(3, int(level_count)))
     overrides = parse_level_goal_overrides(prompt)
@@ -213,7 +213,7 @@ def build_quest_plans(prompt: str, by_level_raw: list, level_count: int) -> list
     all_goals = list(ALLOWED_GOALS)
     used: list[str] = []
     plans: list[list[str]] = []
-    inferred_first = infer_goal_from_prompt(prompt)
+    inferred_goals = infer_goals_from_prompt(prompt)
 
     for lvl in range(1, level_count + 1):
         forced = overrides.get(lvl)
@@ -231,18 +231,18 @@ def build_quest_plans(prompt: str, by_level_raw: list, level_count: int) -> list
             used.extend([g for g in plan if g not in used])
             continue
 
-        if lvl == 1 and inferred_first:
-            plans.append([inferred_first])
-            if inferred_first not in used:
-                used.append(inferred_first)
-            continue
+        # If prompt implies one or more goal types, use those as preferred candidates for
+        # every unspecified level (not just Level 1). Otherwise use all goals.
+        candidates = list(inferred_goals) if inferred_goals else list(all_goals)
 
-        # Random fallback for this level (avoid repeats if possible).
-        candidates = [g for g in all_goals if g not in used] or list(all_goals)
-        pick = random.choice(candidates)
-        plans.append([pick])
-        if pick not in used:
-            used.append(pick)
+        # Random fallback supports goal stacking (1..2 goals per level).
+        preferred = [g for g in candidates if g not in used]
+        pool2 = preferred or list(candidates)
+        max_stack = min(2, len(pool2))
+        stack_n = 1 if max_stack <= 1 else random.randint(1, max_stack)
+        plan = random.sample(pool2, k=stack_n)
+        plans.append(plan)
+        used.extend([g for g in plan if g not in used])
 
     return plans
 
@@ -308,16 +308,23 @@ def _normalize_quest_types(raw: list) -> list[str]:
 
 
 def infer_goal_from_prompt(prompt: str) -> str | None:
+    goals = infer_goals_from_prompt(prompt)
+    return goals[0] if goals else None
+
+
+def infer_goals_from_prompt(prompt: str) -> list[str]:
+    """Infer zero or more goal types from prompt keywords, preserving priority order."""
     p = (prompt or "").lower()
+    out: list[str] = []
     if any(k in p for k in ["heal", "cure", "sick", "remedy", "medicine"]):
-        return "cure"
+        out.append("cure")
     if any(k in p for k in ["unlock", "key", "door", "gate", "sealed"]):
-        return "key_and_door"
+        out.append("key_and_door")
     if any(k in p for k in ["lost", "missing", "heirloom", "stolen", "memento"]):
-        return "lost_item"
+        out.append("lost_item")
     if any(k in p for k in ["bridge", "repair", "fix", "planks", "rope", "nails"]):
-        return "repair_bridge"
-    return None
+        out.append("repair_bridge")
+    return out
 
 
 def _match_keywords(prompt_lower: str, keyword_map: list[tuple[str, list[str]]]) -> str | None:
@@ -3558,25 +3565,20 @@ HTML = '''
                 Detailed example: <code>Level 1 Biome: snow</code>, <code>Level 2: lost_item</code>, <code>Time: night</code>, hero and NPC look/style notes.
             </div>
             <div class="examples">
-                <button class="ex-btn" onclick="setEx('A sunny beach with seashells to collect and a friendly crab')">🏖️ Beach</button>
-                <button class="ex-btn" onclick="setEx('A magical forest at dawn with glowing mushrooms and fairy dust')">🌲 Forest</button>
-                <button class="ex-btn" onclick="setEx('A snowy mountain village with lost mittens and a kind yeti')">❄️ Snow</button>
-                <button class="ex-btn" onclick="setEx('A moonlit garden with fireflies and hidden gems')">🌙 Night</button>
+                <button class="ex-btn" onclick="setBiomeHint('meadow')">🌿 Meadow</button>
+                <button class="ex-btn" onclick="setBiomeHint('forest')">🌲 Forest</button>
+                <button class="ex-btn" onclick="setBiomeHint('town')">🏘️ Town</button>
+                <button class="ex-btn" onclick="setBiomeHint('beach')">🏖️ Beach</button>
+                <button class="ex-btn" onclick="setBiomeHint('snow')">❄️ Snow</button>
+                <button class="ex-btn" onclick="setBiomeHint('desert')">🏜️ Desert</button>
+                <button class="ex-btn" onclick="setBiomeHint('ruins')">🏛️ Ruins</button>
+                <button class="ex-btn" onclick="setBiomeHint('castle')">🏰 Castle</button>
             </div>
-            <div class="levels">
-                <label style="margin:0; color:#22d3ee;">Biome</label>
-                <select id="biomeSelect" style="width:220px; padding:10px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
-                    <option value="">Auto (from prompt/random)</option>
-                    <option value="meadow">Meadow</option>
-                    <option value="forest">Forest</option>
-                    <option value="town">Town</option>
-                    <option value="beach">Beach</option>
-                    <option value="snow">Snow</option>
-                    <option value="desert">Desert</option>
-                    <option value="ruins">Ruins</option>
-                    <option value="castle">Castle</option>
-                </select>
-                <span style="color:#888; font-size:12px;">(optional)</span>
+            <div class="examples" style="margin-top:8px">
+                <button class="ex-btn" onclick="setTimeHint('day')">☀️ Day</button>
+                <button class="ex-btn" onclick="setTimeHint('dawn')">🌅 Dawn</button>
+                <button class="ex-btn" onclick="setTimeHint('sunset')">🌇 Sunset</button>
+                <button class="ex-btn" onclick="setTimeHint('night')">🌙 Night</button>
             </div>
             <div class="levels">
                 <label style="margin:0; color:#22d3ee;">Time of Day</label>
@@ -3734,6 +3736,32 @@ HTML = '''
     
     <script>
         function setEx(t) { document.getElementById('prompt').value = t; }
+        function setBiomeHint(biome) {
+            const el = document.getElementById('prompt');
+            const p = (el.value || '').trim();
+            if (!p) {
+                el.value = `Biome: ${biome}.`;
+                return;
+            }
+            if (/\\bBiome\\s*:/i.test(p)) {
+                el.value = p.replace(/\\bBiome\\s*:\\s*[^.\\n]+/i, `Biome: ${biome}`);
+            } else {
+                el.value = `${p} Biome: ${biome}.`;
+            }
+        }
+        function setTimeHint(tod) {
+            const el = document.getElementById('prompt');
+            const p = (el.value || '').trim();
+            if (!p) {
+                el.value = `Time: ${tod}.`;
+                return;
+            }
+            if (/\\bTime\\s*:/i.test(p)) {
+                el.value = p.replace(/\\bTime\\s*:\\s*[^.\\n]+/i, `Time: ${tod}`);
+            } else {
+                el.value = `${p} Time: ${tod}.`;
+            }
+        }
         function randomPrompt() {
             // These arrays are intentionally aligned with the README's "fixed (finite sets)" so the
             // randomizer can hit all supported biomes / times / layout styles and trigger themed decor.
@@ -3830,7 +3858,6 @@ HTML = '''
         async function generate() {
             const key = document.getElementById('apiKey').value;
             let prompt = document.getElementById('prompt').value;
-            const biome = document.getElementById('biomeSelect').value || '';
             const tod = document.getElementById('timeSelect').value || '';
             const levels = parseInt(document.getElementById('levels').value || '3', 10);
             const goalByLevel = goalsByLevel();
@@ -3838,10 +3865,6 @@ HTML = '''
             const quality = document.getElementById('quality').value || 'medium';
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
-            // If user picked a biome explicitly, inject a stable token if prompt does not already have one.
-            if (biome && !/\\bBiome\\s*:/i.test(prompt)) {
-                prompt = `${prompt.trim()} Biome: ${biome}.`;
-            }
             if (tod && !/\\bTime\\s*:/i.test(prompt)) {
                 prompt = `${prompt.trim()} Time: ${tod}.`;
             }
