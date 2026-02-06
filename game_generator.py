@@ -46,6 +46,7 @@ class Config:
     IMAGE_MAX_RETRIES = 4
     IMAGE_RETRY_BASE_DELAY = 1.5
     DEBUG_SPRITES = True
+    TERRAIN_STYLE = "smooth"  # smooth | classic
     
     TILE_SIZE = 72
     GAME_WIDTH = 1400
@@ -780,6 +781,9 @@ Subject: {subject}"""
                     pixels[x, y] = (0, 0, 0, 0)
                 elif g > r + 110 and g > b + 110 and g > 170:
                     pixels[x, y] = (0, 0, 0, 0)
+                # Remove medium-bright green halos that survive compositing.
+                elif g > 150 and g > r + 70 and g > b + 70:
+                    pixels[x, y] = (r, g, b, max(0, a - 220))
                 # Also remove near-white/gray backgrounds
                 elif r > 240 and g > 240 and b > 240:
                     pixels[x, y] = (0, 0, 0, 0)
@@ -1698,6 +1702,29 @@ class SpriteGenerator:
                         theme=theme,
                     ),
                 )
+            # Bridge visuals can be baked for consistent quality.
+            self._emit_sprite(
+                sprites,
+                "bridge_broken",
+                "Bridge (broken)",
+                lambda: self._baked_or_gen(
+                    baked_key="bridge_broken",
+                    desc="top-down broken wooden bridge tile segment over water, snapped planks, gap in center, small debris, pixel art",
+                    role="item",
+                    theme=theme,
+                ),
+            )
+            self._emit_sprite(
+                sprites,
+                "bridge_fixed",
+                "Bridge (fixed)",
+                lambda: self._baked_or_gen(
+                    baked_key="bridge_fixed",
+                    desc="top-down repaired wooden bridge tile segment over water, intact planks and side ropes, pixel art",
+                    role="item",
+                    theme=theme,
+                ),
+            )
         
         total_calls = len(sprites)
         print(f"\n  Total API calls: {total_calls}")
@@ -1864,6 +1891,8 @@ class TerrainRenderer:
         # Get palette
         time_of_day = game.get("time_of_day", "day")
         terrain_type = game.get("terrain", {}).get("type", "meadow")
+        self.biome = str(terrain_type or "meadow").lower()
+        self.time_of_day = str(time_of_day or "day").lower()
         palette_key = f"{time_of_day}_{terrain_type}"
         if palette_key not in self.PALETTES:
             # Biome/time fallback mapping
@@ -1886,9 +1915,197 @@ class TerrainRenderer:
         self.theme_tags = set([str(t).lower() for t in (terrain.get("theme_tags") or [])])
         self.seed = int(game.get("seed", random.randint(1, 2_000_000_000)))
         self.rng = random.Random(self.seed)
-        
+        self.visual_tile_cache = {}
+        self.tile_cache_dir = os.path.join("generated_terrain_tiles")
+        os.makedirs(self.tile_cache_dir, exist_ok=True)
+
         # Generate random terrain layout
         self.generate_layout()
+        self._build_visual_tiles()
+
+    @staticmethod
+    def _mix_color(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+        t = max(0.0, min(1.0, float(t)))
+        return (
+            int(a[0] + (b[0] - a[0]) * t),
+            int(a[1] + (b[1] - a[1]) * t),
+            int(a[2] + (b[2] - a[2]) * t),
+        )
+
+    @staticmethod
+    def _shift(c: tuple[int, int, int], delta: int) -> tuple[int, int, int]:
+        return (
+            max(0, min(255, c[0] + delta)),
+            max(0, min(255, c[1] + delta)),
+            max(0, min(255, c[2] + delta)),
+        )
+
+    @staticmethod
+    def _color_dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+    def _tile_cache_path(self, key: str) -> str:
+        safe_key = key.replace("/", "_")
+        return os.path.join(self.tile_cache_dir, f"{safe_key}.png")
+
+    def _load_or_build_tile(self, key: str, build_fn) -> pygame.Surface:
+        path = self._tile_cache_path(key)
+        if os.path.exists(path):
+            try:
+                return pygame.image.load(path).convert_alpha()
+            except Exception:
+                pass
+        surf = build_fn().convert_alpha()
+        try:
+            pygame.image.save(surf, path)
+        except Exception:
+            pass
+        return surf
+
+    def _make_textured_tile(
+        self,
+        base: tuple[int, int, int],
+        dark: tuple[int, int, int],
+        light: tuple[int, int, int],
+        edge_dark: int = 20,
+        edge_light: int = 12,
+    ) -> pygame.Surface:
+        ts = self.ts
+        surf = pygame.Surface((ts, ts), pygame.SRCALPHA)
+        # Vertical gradient keeps the top-down style less blocky.
+        for y in range(ts):
+            g = y / max(1, ts - 1)
+            color = self._mix_color(light, base, g * 0.7)
+            pygame.draw.line(surf, color, (0, y), (ts, y))
+        # Noise-like speckles (seeded for deterministic look per map seed).
+        trng = random.Random((self.seed * 31 + hash((base, dark, light, ts))) & 0xFFFFFFFF)
+        for _ in range(max(18, ts // 2)):
+            x = trng.randint(1, ts - 2)
+            y = trng.randint(1, ts - 2)
+            c = dark if trng.random() < 0.55 else light
+            a = trng.randint(22, 52)
+            surf.set_at((x, y), (c[0], c[1], c[2], a))
+        # Soft edges and highlight to break hard block seams.
+        pygame.draw.line(surf, self._shift(base, -edge_dark), (0, ts - 1), (ts, ts - 1), 1)
+        pygame.draw.line(surf, self._shift(base, edge_light), (0, 0), (ts, 0), 1)
+        return surf
+
+    def _make_grass_tile(self, base: tuple[int, int, int], dark: tuple[int, int, int], light: tuple[int, int, int]) -> pygame.Surface:
+        ts = self.ts
+        surf = self._make_textured_tile(base, dark, light, edge_dark=10, edge_light=8)
+        # Add tiny blade clusters so grass reads continuous like classic RPG maps.
+        rng = random.Random((self.seed * 57 + ts * 3) & 0xFFFFFFFF)
+        for _ in range(max(12, ts // 3)):
+            x = rng.randint(2, ts - 3)
+            y = rng.randint(3, ts - 3)
+            c = self._shift(base, rng.randint(6, 20))
+            pygame.draw.line(surf, c, (x, y), (x, y - 2), 1)
+            if rng.random() < 0.5:
+                pygame.draw.line(surf, c, (x + 1, y), (x + 1, y - 1), 1)
+        return surf
+
+    def _make_path_tile(self, base: tuple[int, int, int]) -> pygame.Surface:
+        ts = self.ts
+        light = self._shift(base, 14)
+        dark = self._shift(base, -18)
+        surf = self._make_textured_tile(base, dark, light, edge_dark=8, edge_light=10)
+        # Brick-like chunks for pokemon-style road continuity.
+        step = max(8, ts // 5)
+        for y in range(2, ts - 2, step):
+            offset = 0 if ((y // step) % 2 == 0) else step // 2
+            for x in range(2 + offset, ts - 4, step):
+                w = min(step - 2, ts - x - 2)
+                h = max(3, step // 3)
+                pygame.draw.rect(surf, self._shift(base, 8), (x, y, w, h), border_radius=2)
+                pygame.draw.rect(surf, self._shift(base, -14), (x, y, w, h), 1, border_radius=2)
+        return surf
+
+    def _make_water_tile(self) -> pygame.Surface:
+        ts = self.ts
+        base = self.palette["water"]
+        light = self.palette["water_light"]
+        deep = self._shift(base, -24)
+        surf = pygame.Surface((ts, ts), pygame.SRCALPHA)
+        for y in range(ts):
+            g = y / max(1, ts - 1)
+            c = self._mix_color(light, deep, g)
+            pygame.draw.line(surf, c, (0, y), (ts, y))
+        trng = random.Random((self.seed * 131 + ts * 17) & 0xFFFFFFFF)
+        for _ in range(max(10, ts // 5)):
+            y = trng.randint(2, ts - 3)
+            x0 = trng.randint(0, ts // 2)
+            x1 = min(ts - 1, x0 + trng.randint(ts // 5, ts // 2))
+            pygame.draw.line(surf, (*light, trng.randint(60, 110)), (x0, y), (x1, y), 1)
+        return surf
+
+    def _build_visual_tiles(self):
+        # Biome specific base tile families to keep each map distinct.
+        biome = self.biome
+        if "snow" in biome:
+            base_ground = self._mix_color(self.palette["grass_light"], (250, 250, 255), 0.6)
+        elif "desert" in biome or "beach" in biome:
+            base_ground = self._mix_color(self.palette["path"], self.palette["grass_light"], 0.65)
+        elif "ruin" in biome or "castle" in biome:
+            base_ground = self._mix_color(self.palette["rock"], self.palette["grass_dark"], 0.45)
+        else:
+            base_ground = self.palette["grass_light"]
+
+        key_base = f"{self.biome}_{self.time_of_day}_{self.ts}"
+        self.visual_tile_cache["ground"] = self._load_or_build_tile(
+            f"ground_{key_base}",
+            lambda: self._make_grass_tile(
+                base_ground,
+                self.palette["grass_dark"],
+                self._shift(base_ground, 16),
+            ),
+        )
+        self.visual_tile_cache["ground_alt"] = self._load_or_build_tile(
+            f"ground_alt_{key_base}",
+            lambda: self._make_textured_tile(
+                self._shift(base_ground, -8),
+                self._shift(self.palette["grass_dark"], -8),
+                self._shift(base_ground, 10),
+            ),
+        )
+        self.visual_tile_cache["path"] = self._load_or_build_tile(
+            f"path_{key_base}",
+            lambda: self._make_path_tile(self.palette["path"]),
+        )
+        self.visual_tile_cache["water"] = self._load_or_build_tile(
+            f"water_{key_base}",
+            self._make_water_tile,
+        )
+
+        # One continuous overlay layer removes the "checkerboard grid" feel.
+        overlay = pygame.Surface((self.mw * self.ts, self.mh * self.ts), pygame.SRCALPHA)
+        orng = random.Random((self.seed * 97 + len(self.biome) * 13) & 0xFFFFFFFF)
+        dots = max(120, (self.mw * self.mh) * 2)
+        for _ in range(dots):
+            x = orng.randint(0, self.mw * self.ts - 1)
+            y = orng.randint(0, self.mh * self.ts - 1)
+            r = orng.randint(1, max(2, self.ts // 10))
+            if "snow" in self.biome:
+                c = (*self._shift(self.palette["grass_light"], 14), orng.randint(20, 45))
+            elif "desert" in self.biome or "beach" in self.biome:
+                c = (*self._shift(self.palette["path"], 8), orng.randint(15, 38))
+            elif "ruin" in self.biome or "castle" in self.biome:
+                c = (*self._shift(self.palette["rock"], 8), orng.randint(15, 34))
+            else:
+                c = (*self._shift(self.palette["grass_light"], 10), orng.randint(12, 32))
+            pygame.draw.circle(overlay, c, (x, y), r)
+        self.ground_overlay = overlay
+
+        # Global time tint improves smooth scene cohesion.
+        tint = pygame.Surface((self.mw * self.ts, self.mh * self.ts), pygame.SRCALPHA)
+        if self.time_of_day == "night":
+            tint.fill((18, 28, 58, 70))
+        elif self.time_of_day == "dawn":
+            tint.fill((255, 180, 120, 30))
+        elif self.time_of_day == "sunset":
+            tint.fill((255, 120, 100, 38))
+        else:
+            tint.fill((255, 255, 255, 0))
+        self.time_tint = tint
     
     def generate_layout(self):
         """Generate terrain features"""
@@ -2131,40 +2348,11 @@ class TerrainRenderer:
         map_rect = (0, 0, self.mw * ts, self.mh * ts)
         screen.fill(self.palette["bg"], map_rect)
 
-        # Draw base tiles (grass/path/water)
-        for y in range(self.mh):
-            for x in range(self.mw):
-                rect = (x * ts, y * ts, ts, ts)
-                if (x, y) in self.water_tiles:
-                    pygame.draw.rect(screen, self.palette["water"], rect)
-                    pygame.draw.line(screen, self.palette["water_light"], (x * ts, y * ts), (x * ts + ts, y * ts), 1)
-                    # Animated water shimmer
-                    wave = int((t * 10 + (x * 3 + y * 5)) % ts)
-                    pygame.draw.line(
-                        screen, self.palette["water_light"],
-                        (x * ts, y * ts + wave),
-                        (x * ts + ts, y * ts + wave), 2
-                    )
-                elif (x, y) in self.path_tiles:
-                    pygame.draw.rect(screen, self.palette["path"], rect)
-                    # Path texture (deterministic dots)
-                    v = self.tile_variation.get((x, y), 0)
-                    if v == 0:
-                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 10, y * ts + 12), 2)
-                    elif v == 1:
-                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 22, y * ts + 18), 2)
-                    else:
-                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 16, y * ts + 26), 2)
-                else:
-                    v = self.tile_variation.get((x, y), 0)
-                    color = self.palette["grass_light"] if v == 0 else self.palette["grass_dark"]
-                    pygame.draw.rect(screen, color, rect)
-                # Subtle tile edge for depth
-                if (x + y) % 2 == 0:
-                    pygame.draw.line(screen, (0, 0, 0, 30), (x * ts, y * ts), (x * ts + ts, y * ts), 1)
-                if (x + y) % 4 == 0:
-                    pygame.draw.line(screen, (255, 255, 255, 20), (x * ts, y * ts), (x * ts, y * ts + ts), 1)
-        
+        if str(getattr(Config, "TERRAIN_STYLE", "smooth")).lower() == "classic":
+            self._draw_base_classic(screen, t)
+        else:
+            self._draw_base_smooth(screen, t)
+
         # Draw rocks
         for rx, ry in self.rocks:
             cx, cy = rx * ts + ts//2, ry * ts + ts//2
@@ -2268,6 +2456,89 @@ class TerrainRenderer:
             cx, cy = x * ts + ts // 2, y * ts + ts // 2
             pygame.draw.line(screen, (60, 140, 80), (cx, cy - 14), (cx - 8, cy + 14), 3)
             pygame.draw.line(screen, (60, 140, 80), (cx + 4, cy - 12), (cx + 10, cy + 12), 2)
+
+    def _draw_base_classic(self, screen, t: float = 0.0):
+        ts = self.ts
+        for y in range(self.mh):
+            for x in range(self.mw):
+                rect = (x * ts, y * ts, ts, ts)
+                if (x, y) in self.water_tiles:
+                    pygame.draw.rect(screen, self.palette["water"], rect)
+                    pygame.draw.line(screen, self.palette["water_light"], (x * ts, y * ts), (x * ts + ts, y * ts), 1)
+                    wave = int((t * 10 + (x * 3 + y * 5)) % ts)
+                    pygame.draw.line(screen, self.palette["water_light"], (x * ts, y * ts + wave), (x * ts + ts, y * ts + wave), 2)
+                elif (x, y) in self.path_tiles:
+                    pygame.draw.rect(screen, self.palette["path"], rect)
+                    v = self.tile_variation.get((x, y), 0)
+                    if v == 0:
+                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 10, y * ts + 12), 2)
+                    elif v == 1:
+                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 22, y * ts + 18), 2)
+                    else:
+                        pygame.draw.circle(screen, self.palette["grass_dark"], (x * ts + 16, y * ts + 26), 2)
+                else:
+                    v = self.tile_variation.get((x, y), 0)
+                    color = self.palette["grass_light"] if v == 0 else self.palette["grass_dark"]
+                    pygame.draw.rect(screen, color, rect)
+                if (x + y) % 2 == 0:
+                    pygame.draw.line(screen, (0, 0, 0), (x * ts, y * ts), (x * ts + ts, y * ts), 1)
+                if (x + y) % 4 == 0:
+                    pygame.draw.line(screen, (255, 255, 255), (x * ts, y * ts), (x * ts, y * ts + ts), 1)
+
+    def _draw_base_smooth(self, screen, t: float = 0.0):
+        ts = self.ts
+        ground_tile = self.visual_tile_cache.get("ground")
+        path_tile = self.visual_tile_cache.get("path")
+        water_tile = self.visual_tile_cache.get("water")
+
+        # Draw base tiles (top-down textured ground/path/water)
+        for y in range(self.mh):
+            for x in range(self.mw):
+                px, py = x * ts, y * ts
+                if (x, y) in self.water_tiles:
+                    if water_tile is not None:
+                        screen.blit(water_tile, (px, py))
+                    # Animated ripple lines over water tile.
+                    wave = int((t * 14 + (x * 2 + y * 4)) % ts)
+                    pygame.draw.line(
+                        screen,
+                        self.palette["water_light"],
+                        (px + 4, py + wave),
+                        (px + ts - 4, py + wave),
+                        2,
+                    )
+                elif (x, y) in self.path_tiles:
+                    if path_tile is not None:
+                        screen.blit(path_tile, (px, py))
+                    # Round path corners for smoother top-down roads.
+                    pygame.draw.circle(screen, self.palette["path"], (px + ts // 2, py + ts // 2), ts // 3)
+                else:
+                    if ground_tile is not None:
+                        screen.blit(ground_tile, (px, py))
+
+                # Shore highlight where land touches water.
+                if (x, y) not in self.water_tiles:
+                    near_water = (
+                        (x + 1, y) in self.water_tiles
+                        or (x - 1, y) in self.water_tiles
+                        or (x, y + 1) in self.water_tiles
+                        or (x, y - 1) in self.water_tiles
+                    )
+                    if near_water:
+                        pygame.draw.rect(
+                            screen,
+                            self._shift(self.palette["water_light"], 20),
+                            (px + 2, py + 2, ts - 4, ts - 4),
+                            1,
+                        )
+
+        # Apply a single continuous texture layer so tiles read as connected terrain.
+        if getattr(self, "ground_overlay", None) is not None:
+            screen.blit(self.ground_overlay, (0, 0))
+
+        # Apply time-of-day tint after terrain base pass.
+        if getattr(self, "time_tint", None) is not None:
+            screen.blit(self.time_tint, (0, 0))
     
     def get_solid_tiles(self) -> set:
         """Return tiles that block movement"""
@@ -2286,6 +2557,8 @@ class InteriorRenderer:
     THEMES = {
         "apothecary": ((135,105,85), (125,95,78), (55,55,75), (75,75,105), (105,65,42), (120,200,255)),
         "inn":        ((155,125,95), (145,115,88), (65,60,70), (90,80,100), (120,80,55), (255,220,120)),
+        "inn_lobby":  ((158,128,98), (146,116,90), (62,58,70), (88,78,96), (124,82,56), (255,220,120)),
+        "inn_room":   ((170,150,128), (160,140,118), (66,64,76), (94,92,110), (130,92,68), (255,235,170)),
         "house":      ((150,135,115), (140,125,108), (70,70,85), (95,95,120), (125,85,58), (200,255,200)),
         "shop":       ((150,120,90), (140,110,85), (60,60,80), (80,80,110), (110,70,45), (120,200,255)),
     }
@@ -2343,7 +2616,29 @@ class InteriorRenderer:
             cx = self.mw // 2
             pygame.draw.rect(screen, self.shelf, (cx * ts - ts * 2, 6 * ts, ts * 4, ts), border_radius=6)
             pygame.draw.rect(screen, (60, 40, 30), (cx * ts - ts * 2 + 10, 6 * ts + 10, ts * 4 - 20, ts - 18), border_radius=6)
-        elif self.theme == "inn":
+        elif self.theme in ["inn", "inn_lobby"]:
+            # Reception counter near top.
+            pygame.draw.rect(screen, self.shelf, (self.mw // 2 * ts - ts * 2, 2 * ts, ts * 4, ts), border_radius=6)
+            pygame.draw.rect(screen, (80, 56, 38), (self.mw // 2 * ts - ts * 2 + 8, 2 * ts + 8, ts * 4 - 16, ts - 14), border_radius=6)
+            sign = pygame.draw.rect(screen, (120, 84, 56), (self.mw // 2 * ts - 40, ts + 12, 80, 18), border_radius=4)
+            # Guest room hallway doors with numbers.
+            door_y = 5 * ts
+            hall_xs = [2 * ts, 5 * ts, 8 * ts, 11 * ts]
+            for idx, dx in enumerate(hall_xs, start=1):
+                pygame.draw.rect(screen, (104, 70, 48), (dx, door_y, ts - 12, ts), border_radius=6)
+                pygame.draw.rect(screen, (74, 48, 34), (dx, door_y, ts - 12, ts), 2, border_radius=6)
+                num = self._small_font().render(str(idx), True, (240, 230, 200))
+                screen.blit(num, (dx + (ts // 2) - 8, door_y - 14))
+
+            # Lounge rugs and tables.
+            pygame.draw.rect(screen, (118, 64, 44), (2 * ts, 8 * ts, ts * 5, ts * 2), border_radius=10)
+            pygame.draw.rect(screen, (94, 52, 36), (9 * ts, 8 * ts, ts * 5, ts * 2), border_radius=10)
+            for tx in [4 * ts, 11 * ts]:
+                pygame.draw.circle(screen, (120, 84, 56), (tx, 9 * ts), 18)
+                pygame.draw.circle(screen, (90, 62, 44), (tx, 9 * ts), 18, 2)
+                pygame.draw.circle(screen, (240, 214, 130), (tx + 2, 9 * ts - 2), 5)
+
+            # Left/right decorative beds in lobby corners for RPG vibe.
             # Beds (left + right)
             bed_color = (210, 210, 235)
             quilt = (150, 80, 90)
@@ -2365,6 +2660,18 @@ class InteriorRenderer:
             # Rug
             pygame.draw.rect(screen, (120, 60, 40), (self.mw // 2 * ts - ts * 2, 8 * ts, ts * 4, ts * 2), border_radius=10)
             pygame.draw.rect(screen, (160, 90, 60), (self.mw // 2 * ts - ts * 2 + 10, 8 * ts + 10, ts * 4 - 20, ts * 2 - 20), border_radius=10)
+        elif self.theme == "inn_room":
+            # Cozy private room with one bed and a private door.
+            pygame.draw.rect(screen, (190, 170, 142), (2 * ts, 2 * ts, self.mw * ts - 4 * ts, self.mh * ts - 4 * ts), border_radius=12)
+            # Bed
+            pygame.draw.rect(screen, (220, 220, 238), (4 * ts, 4 * ts, ts * 5, ts * 3), border_radius=10)
+            pygame.draw.rect(screen, (110, 80, 130), (4 * ts + 12, 4 * ts + 28, ts * 5 - 24, ts * 3 - 40), border_radius=10)
+            pygame.draw.rect(screen, (242, 242, 250), (4 * ts + 16, 4 * ts + 12, ts * 2, ts // 2), border_radius=6)
+            # Side table + candle
+            pygame.draw.rect(screen, (126, 88, 60), (10 * ts, 5 * ts, ts + 8, ts), border_radius=5)
+            pygame.draw.circle(screen, (255, 220, 120), (10 * ts + ts // 2, 5 * ts + ts // 2), 6)
+            # Room exit door
+            pygame.draw.rect(screen, (108, 74, 50), (self.mw // 2 * ts - 16, (self.mh - 1) * ts + 8, 32, ts - 14), border_radius=6)
 
         # Warm light pool
         glow = pygame.Surface((self.mw * ts, self.mh * ts), pygame.SRCALPHA)
@@ -2392,7 +2699,7 @@ class InteriorRenderer:
             cx = self.mw // 2
             for x in range(cx - 2, cx + 2):
                 solid.add((x, 6))
-        elif self.theme == "inn":
+        elif self.theme in ["inn", "inn_lobby"]:
             # Beds block their tiles
             for x in range(2, 6):
                 solid.add((x, 3))
@@ -2402,7 +2709,22 @@ class InteriorRenderer:
                 solid.add((x, 4))
             # Table
             solid.add((self.mw // 2, 6))
+            # Reception counter and hallway doors
+            for x in range(self.mw // 2 - 2, self.mw // 2 + 2):
+                solid.add((x, 2))
+            for x in [2, 5, 8, 11]:
+                solid.add((x, 5))
+        elif self.theme == "inn_room":
+            # Bed footprint
+            for x in range(4, 9):
+                for y in range(4, 7):
+                    solid.add((x, y))
+            # side table
+            solid.add((10, 5))
         return solid
+
+    def _small_font(self):
+        return pygame.font.Font(None, 20)
 
 
 # ============================================================
@@ -2430,6 +2752,57 @@ class GameEngine:
 
         self.load_level(0)
 
+    @staticmethod
+    def _cleanup_sprite_rgba(img: Image.Image) -> Image.Image:
+        """
+        Final safety cleanup for generated/baked sprites.
+        Removes residual green-screen pixels and trims green edge halos.
+        """
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        px = img.load()
+        w, h = img.size
+        border_samples = []
+        for x in range(w):
+            border_samples.append(px[x, 0][:3])
+            border_samples.append(px[x, h - 1][:3])
+        for y in range(h):
+            border_samples.append(px[0, y][:3])
+            border_samples.append(px[w - 1, y][:3])
+        # Pick a dominant border color bucket for flood-style background removal.
+        bucket = {}
+        for c in border_samples:
+            key = (c[0] // 16, c[1] // 16, c[2] // 16)
+            bucket[key] = bucket.get(key, 0) + 1
+        dom_key = max(bucket.items(), key=lambda kv: kv[1])[0] if bucket else None
+        dom_color = (dom_key[0] * 16 + 8, dom_key[1] * 16 + 8, dom_key[2] * 16 + 8) if dom_key else None
+
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if a == 0:
+                    continue
+                # Hard chroma key removal.
+                if g > 175 and g > r + 70 and g > b + 70:
+                    px[x, y] = (0, 0, 0, 0)
+                    continue
+                # Remove border-colored matte if it resembles keyed background.
+                if dom_color is not None and (x in [0, w - 1] or y in [0, h - 1]):
+                    if (
+                        TerrainRenderer._color_dist((r, g, b), dom_color) < 42
+                        and (g > r + 40 or g > b + 40 or (r > 235 and g > 235 and b > 235))
+                    ):
+                        px[x, y] = (0, 0, 0, 0)
+                        continue
+                # Defringe semitransparent green spill on edges.
+                if a < 255 and g > r + 40 and g > b + 40:
+                    nr = min(255, int(r * 1.08))
+                    nb = min(255, int(b * 1.08))
+                    ng = int(g * 0.55)
+                    na = max(0, min(255, a - 70))
+                    px[x, y] = (nr, ng, nb, na)
+        return img
+
     def load_level(self, index: int):
         self.level_index = index
         level = self.levels[index]
@@ -2450,8 +2823,7 @@ class GameEngine:
         self.sprite_offsets = {}
         ts = self.config.TILE_SIZE
         for name, img in sprites.items():
-            if img.mode != "RGBA":
-                img = img.convert("RGBA")
+            img = self._cleanup_sprite_rgba(img)
             surface = pygame.image.fromstring(img.tobytes(), img.size, "RGBA")
             scale = 1.0
             base_name = name.replace("_alt", "")
@@ -2464,7 +2836,9 @@ class GameEngine:
             elif base_name in ["key"]:
                 scale = 1.1
             size = max(1, int(ts * scale))
-            surf = pygame.transform.scale(surface, (size, size))
+            surf = pygame.transform.scale(surface, (size, size)).convert_alpha()
+            # Final hard fallback for any lingering pure-green matte.
+            surf.set_colorkey((0, 255, 0))
             self.surfaces[name] = surf
             off_x = (ts - size) // 2
             off_y = ts - size
@@ -2492,6 +2866,7 @@ class GameEngine:
 
         # World state
         self.scene = "outdoor"  # or "indoor"
+        self.indoor_mode = "lobby"  # inn: lobby/room
         self.current_building = None
         self.money = 60
         self.sleeping = False
@@ -2548,14 +2923,20 @@ class GameEngine:
             {
                 "name": "Inn",
                 "theme": "inn",
-                "npc": "Innkeeper",
-                "dialogue": "Rest your feet. Travelers always have stories.",
+                "npc": "Inn Host",
+                "dialogue": "Welcome traveler. Rooms are 12g per night.",
                 "entrance": entrance_inn,
                 "exit": (door_x, self.config.MAP_HEIGHT - 1),
-                "npc_pos": (self.config.MAP_WIDTH // 2 + 2, 4),
+                "npc_pos": (self.config.MAP_WIDTH // 2, 3),
                 "npc_sprite_key": "npc_inn",
                 "goods": inn_goods,
-                "bed_pos": (3, 4),
+                "bed_pos": (6, 5),
+                "room_door": (self.config.MAP_WIDTH // 2, 5),
+                "room_exit": (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 1),
+                "room_number": "3",
+                "guest_npcs": [(3, 8), (11, 8)],
+                "room_paid": False,
+                "room_unlocked": False,
                 "items": [],
             },
         ]
@@ -2747,6 +3128,65 @@ class GameEngine:
         ox, oy = self.sprite_offsets.get(key, (0, 0))
         ex, ey = extra
         self.screen.blit(surf, (px + ox + ex, py + oy + ey))
+
+    def _draw_building_exterior(self, center_x: int, center_y: int, theme: str, label: str):
+        """Draw a top-down RPG-style building exterior with clearer inn/shop identity."""
+        ts = self.config.TILE_SIZE
+        bw = int(ts * 2.7)
+        bh = int(ts * 2.2)
+        x0 = center_x - bw // 2
+        y0 = center_y - bh + ts // 2
+
+        if theme == "inn":
+            roof_main = (140, 92, 65)
+            roof_hi = (186, 130, 88)
+            wall = (198, 182, 150)
+            trim = (122, 92, 70)
+            sign_bg = (98, 68, 44)
+        else:  # shop
+            roof_main = (118, 70, 50)
+            roof_hi = (164, 102, 78)
+            wall = (188, 170, 144)
+            trim = (110, 84, 62)
+            sign_bg = (86, 58, 40)
+
+        # Ground apron/path near entrance.
+        pygame.draw.rect(
+            self.screen,
+            (205, 178, 142),
+            (x0 + 8, center_y + 4, bw - 16, 18),
+            border_radius=6,
+        )
+
+        # Main walls.
+        pygame.draw.rect(self.screen, wall, (x0 + 10, y0 + ts - 6, bw - 20, bh - ts + 6), border_radius=8)
+        pygame.draw.rect(self.screen, trim, (x0 + 10, y0 + ts - 6, bw - 20, bh - ts + 6), 2, border_radius=8)
+
+        # Roof body + top highlight tiles.
+        pygame.draw.rect(self.screen, roof_main, (x0, y0 + 4, bw, ts + 6), border_radius=10)
+        tile_w = max(10, ts // 5)
+        for xx in range(x0 + 6, x0 + bw - 6, tile_w):
+            pygame.draw.rect(self.screen, roof_hi, (xx, y0 + 10, tile_w - 2, 7), border_radius=2)
+            pygame.draw.line(self.screen, self.terrain._shift(roof_main, -22), (xx, y0 + 18), (xx + tile_w - 2, y0 + 18), 1)
+
+        # Windows.
+        wx1 = x0 + 20
+        wx2 = x0 + bw - 44
+        wy = y0 + ts + 10
+        for wx in [wx1, wx2]:
+            pygame.draw.rect(self.screen, (86, 160, 210), (wx, wy, 22, 16), border_radius=3)
+            pygame.draw.rect(self.screen, (235, 230, 170), (wx + 2, wy + 12, 18, 4), border_radius=2)
+            pygame.draw.rect(self.screen, trim, (wx, wy, 22, 16), 2, border_radius=3)
+
+        # Door centered on entrance.
+        pygame.draw.rect(self.screen, (112, 78, 52), (center_x - 15, center_y - 20, 30, 42), border_radius=6)
+        pygame.draw.rect(self.screen, (82, 56, 38), (center_x - 15, center_y - 20, 30, 42), 2, border_radius=6)
+        pygame.draw.circle(self.screen, (238, 210, 98), (center_x + 9, center_y + 2), 3)
+
+        # Sign plaque.
+        pygame.draw.rect(self.screen, sign_bg, (x0 + 14, y0 + ts + 8, 50, 16), border_radius=4)
+        txt = self.font.render(label, True, (238, 236, 226))
+        self.screen.blit(txt, (x0 + 18, y0 + ts + 8))
 
     def _anim_key(self, base: str, moving: bool = False):
         alt = f"{base}_alt"
@@ -3057,10 +3497,15 @@ class GameEngine:
                 ex, ey = b["entrance"]
                 if abs(ex - px) <= 1 and abs(ey - py) <= 1:
                     self.current_building = b
-                    self.interior = InteriorRenderer(self.config, theme=b["theme"], door_x=b["exit"][0])
+                    interior_theme = "inn_lobby" if b.get("theme") == "inn" else b["theme"]
+                    self.interior = InteriorRenderer(self.config, theme=interior_theme, door_x=b["exit"][0])
                     self.solid_indoor = self.interior.get_solid_tiles()
                     nx, ny = b["npc_pos"]
                     self.solid_indoor.add((nx, ny))
+                    if b.get("theme") == "inn":
+                        for gx, gy in b.get("guest_npcs", []):
+                            self.solid_indoor.add((gx, gy))
+                    self.indoor_mode = "lobby"
 
                     self.scene = "indoor"
                     self.solid = self.solid_indoor
@@ -3072,27 +3517,95 @@ class GameEngine:
                         gtxt = ", ".join([f"{i+1}:{g['name']}({g['price']}g)" for i, g in enumerate(b["goods"][:3])])
                         self.msg(f"Entered {b['name']}. Buy: {gtxt}. Gold: {self.money}g.")
                     if b.get("theme") == "inn":
-                        self.msg("Inn: walk to a bed and press SPACE to sleep (costs gold).")
+                        self.msg(f"Inn Host: 'Check in at the desk. Room {b.get('room_number', '3')} is 12g.'")
                     return
         else:
             ex, ey = self.current_building["exit"] if self.current_building else (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 2)
-            if abs(ex - px) <= 1 and abs(ey - py) <= 1:
-                self.scene = "outdoor"
-                self.solid = self.solid_outdoor
-                ox, oy = self.current_building["entrance"] if self.current_building else (3, self.config.MAP_HEIGHT // 2)
-                self.player_x = ox * ts
-                self.player_y = (oy + 1) * ts
-                self.msg("Back outside.")
-                return
+            if self.current_building and self.current_building.get("theme") == "inn":
+                # Lobby <-> room transitions + outside exit.
+                if self.indoor_mode == "room":
+                    rx, ry = self.current_building.get("room_exit", (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 1))
+                    if abs(rx - px) <= 1 and abs(ry - py) <= 1:
+                        self.indoor_mode = "lobby"
+                        self.interior = InteriorRenderer(self.config, theme="inn_lobby", door_x=self.current_building["exit"][0])
+                        self.solid_indoor = self.interior.get_solid_tiles()
+                        nx, ny = self.current_building["npc_pos"]
+                        self.solid_indoor.add((nx, ny))
+                        for gx, gy in self.current_building.get("guest_npcs", []):
+                            self.solid_indoor.add((gx, gy))
+                        self.solid = self.solid_indoor
+                        self.player_x = rx * ts
+                        self.player_y = (ry - 2) * ts
+                        self.msg("You return to the inn lobby.")
+                        return
+                else:
+                    if abs(ex - px) <= 1 and abs(ey - py) <= 1:
+                        self.scene = "outdoor"
+                        self.solid = self.solid_outdoor
+                        ox, oy = self.current_building["entrance"] if self.current_building else (3, self.config.MAP_HEIGHT // 2)
+                        self.player_x = ox * ts
+                        self.player_y = (oy + 1) * ts
+                        self.msg("Back outside.")
+                        return
+                    rdx, rdy = self.current_building.get("room_door", (self.config.MAP_WIDTH // 2, 5))
+                    if abs(rdx - px) <= 1 and abs(rdy - py) <= 1:
+                        if not self.current_building.get("room_unlocked", False):
+                            self.msg("Room door is locked. Talk to the inn host at the desk.")
+                            return
+                        self.indoor_mode = "room"
+                        self.interior = InteriorRenderer(self.config, theme="inn_room", door_x=self.current_building["room_exit"][0])
+                        self.solid_indoor = self.interior.get_solid_tiles()
+                        self.solid = self.solid_indoor
+                        self.player_x = rdx * ts
+                        self.player_y = (rdy + 2) * ts
+                        self.msg(f"You unlock Room {self.current_building.get('room_number', '3')} and step inside.")
+                        return
+            else:
+                if abs(ex - px) <= 1 and abs(ey - py) <= 1:
+                    self.scene = "outdoor"
+                    self.solid = self.solid_outdoor
+                    ox, oy = self.current_building["entrance"] if self.current_building else (3, self.config.MAP_HEIGHT // 2)
+                    self.player_x = ox * ts
+                    self.player_y = (oy + 1) * ts
+                    self.msg("Back outside.")
+                    return
 
             # Indoor NPC dialogue
             if self.current_building:
                 nx, ny = self.current_building["npc_pos"]
                 if abs(nx - px) <= 1 and abs(ny - py) <= 1:
                     who = self.current_building.get("npc", "NPC")
-                    line = self.current_building.get("dialogue", "Hello!")
-                    self.msg(f'{who}: "{line}"')
+                    if self.current_building.get("theme") == "inn":
+                        if not self.current_building.get("room_paid", False):
+                            price = 12
+                            if self.money < price:
+                                self.msg(f"{who}: 'A room is {price}g. You only have {self.money}g right now.'")
+                            else:
+                                self.money -= price
+                                self.current_building["room_paid"] = True
+                                self.current_building["room_unlocked"] = True
+                                self.items_collected.add("inn_room_key")
+                                self.msg(
+                                    f"{who}: 'Thank you. Room {self.current_building.get('room_number', '3')} is yours tonight. "
+                                    f"The key unlocks the hall door.' (-{price}g)"
+                                )
+                        else:
+                            self.msg(f"{who}: 'Your room {self.current_building.get('room_number', '3')} is down the hall. Sleep well.'")
+                    else:
+                        line = self.current_building.get("dialogue", "Hello!")
+                        self.msg(f'{who}: "{line}"')
                     return
+                # Inn guest flavor dialogue.
+                if self.current_building.get("theme") == "inn" and self.indoor_mode == "lobby":
+                    for i, (gx, gy) in enumerate(self.current_building.get("guest_npcs", []), start=1):
+                        if abs(gx - px) <= 1 and abs(gy - py) <= 1:
+                            guest_lines = [
+                                "The stew here is legendary.",
+                                "Roads are safer after dawn.",
+                                "I heard the bridge was fixed by a traveling hero.",
+                            ]
+                            self.msg(f"Guest {i}: '{guest_lines[(i - 1) % len(guest_lines)]}'")
+                            return
         
         npc = self.game["npc"]
         if abs(npc["x"] - px) <= 1 and abs(npc["y"] - py) <= 1:
@@ -3148,6 +3661,8 @@ class GameEngine:
         # Indoor interactions (inn sleeping)
         if self.scene == "indoor" and self.current_building:
             if self.current_building.get("theme") == "inn":
+                if getattr(self, "indoor_mode", "lobby") != "room":
+                    return
                 bed = self.current_building.get("bed_pos")
                 if bed:
                     bx, by = bed
@@ -3269,6 +3784,9 @@ class GameEngine:
                 mid = y + ts // 2
 
                 if self.bridge_repaired:
+                    if self.surfaces.get("bridge_fixed"):
+                        self._blit_sprite("bridge_fixed", bx, by)
+                        continue
                     # Fixed bridge: wooden planks + side ropes
                     pygame.draw.rect(self.screen, (150, 110, 75), (x, mid - 12, ts, 24))
                     for px in range(x + 10, x + ts - 10, 12):
@@ -3277,6 +3795,9 @@ class GameEngine:
                     pygame.draw.line(self.screen, (210, 190, 140), (x + 6, mid - 14), (x + ts - 6, mid - 14), 2)
                     pygame.draw.line(self.screen, (210, 190, 140), (x + 6, mid + 14), (x + ts - 6, mid + 14), 2)
                 else:
+                    if self.surfaces.get("bridge_broken"):
+                        self._blit_sprite("bridge_broken", bx, by)
+                        continue
                     # Broken bridge: partial boards with a gap + rubble
                     pygame.draw.rect(self.screen, (95, 75, 60), (x, mid - 12, ts, 24))
                     # Missing center boards
@@ -3305,8 +3826,8 @@ class GameEngine:
                 theme = self.current_building.get("theme")
                 if theme == "shop":
                     # Put items on the back shelves (not the middle of the floor).
-                    gx = 3 + gi * 4
-                    gy = 2
+                    shelf_spots = [(3, 2), (7, 2), (11, 2), (4, 4), (10, 4)]
+                    gx, gy = shelf_spots[gi % len(shelf_spots)]
                 elif theme == "inn":
                     # Put items near the table.
                     gx = self.config.MAP_WIDTH // 2 - 1 + gi * 2
@@ -3347,22 +3868,8 @@ class GameEngine:
                 ex, ey = b["entrance"]
                 cx = ex * ts + ts // 2
                 cy = ey * ts + ts // 2
-                # Simple building sprite (2.5 tiles wide, 2 tiles tall) with a door on the entrance tile.
-                w = int(ts * 2.6)
-                h = int(ts * 2.0)
-                x0 = cx - w // 2
-                y0 = cy - h + ts // 2
-                roof = (150, 70, 60) if b["theme"] == "shop" else (120, 80, 140)
-                wall = (110, 95, 80) if b["theme"] == "shop" else (105, 95, 115)
-                pygame.draw.rect(self.screen, roof, (x0, y0, w, ts), border_radius=8)
-                pygame.draw.rect(self.screen, wall, (x0 + 8, y0 + ts - 6, w - 16, h - ts + 6), border_radius=8)
-                # Door
-                pygame.draw.rect(self.screen, (80, 55, 40), (cx - 16, cy - 18, 32, 40), border_radius=6)
-                pygame.draw.circle(self.screen, (240, 210, 80), (cx + 10, cy + 2), 3)
-                # Sign
-                pygame.draw.rect(self.screen, (90, 60, 40), (x0 + 18, y0 + ts + 10, 44, 16), border_radius=3)
                 label = "SHOP" if b["theme"] == "shop" else "INN"
-                self.screen.blit(self.font.render(label, True, (240, 240, 240)), (x0 + 22, y0 + ts + 10))
+                self._draw_building_exterior(cx, cy, b["theme"], label)
         
         # Draw NPC
         npc = self.game["npc"]
@@ -3381,6 +3888,18 @@ class GameEngine:
                 if key not in self.surfaces:
                     key = "npc"
                 self._blit_sprite(key, nx, ny, (0, 0))
+                # Inn lobby extra NPCs for life.
+                if self.current_building.get("theme") == "inn" and getattr(self, "indoor_mode", "lobby") == "lobby":
+                    for i, (gx, gy) in enumerate(self.current_building.get("guest_npcs", []), start=1):
+                        gkey = "npc" if i % 2 == 0 else key
+                        if gkey not in self.surfaces:
+                            gkey = key
+                        self._blit_sprite(gkey, gx, gy, (0, 0))
+                    # Room door marker in lobby.
+                    rdx, rdy = self.current_building.get("room_door", (self.config.MAP_WIDTH // 2, 5))
+                    tag = pygame.draw.rect(self.screen, (75, 55, 40), (rdx * ts + 18, rdy * ts - 10, 34, 14), border_radius=3)
+                    txt = self.font.render(f"R{self.current_building.get('room_number', '3')}", True, (235, 225, 200))
+                    self.screen.blit(txt, (rdx * ts + 22, rdy * ts - 10))
         
         # Draw player
         moving = getattr(self, "is_moving", False)
@@ -3430,7 +3949,10 @@ class GameEngine:
             pygame.draw.rect(self.screen, (100, 100, 140), (12, box_y, box_w, box_h), 3, border_radius=5)
             
             for i, line in enumerate(lines):
-                text = self.font.render(line, True, (255, 255, 255))
+                color = (255, 255, 255)
+                if i == 0 and ":" in line[:22]:
+                    color = (255, 230, 170)
+                text = self.font.render(line, True, color)
                 self.screen.blit(text, (padding_x, box_y + 10 + i * 22))
         
         pygame.display.flip()
@@ -3720,6 +4242,14 @@ HTML = '''
                 </select>
                 <span style="color:#888; font-size:12px;">(affects cost)</span>
             </div>
+            <div class="levels">
+                <label style="margin:0; color:#22d3ee;">Terrain Style</label>
+                <select id="terrainStyle" style="width:180px; padding:10px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                    <option value="smooth" selected>Smooth</option>
+                    <option value="classic">Classic</option>
+                </select>
+                <span style="color:#888; font-size:12px;">(visual only)</span>
+            </div>
             <div class="levels" style="margin-top:10px; display:block">
                 <label style="margin:0; color:#22d3ee;">Goals (per level, optional)</label>
                 <div style="color:#888; font-size:12px; margin-top:6px">
@@ -3978,6 +4508,7 @@ HTML = '''
             const goalByLevel = goalsByLevel();
             const biomeByLevel = biomesByLevel();
             const quality = document.getElementById('quality').value || 'medium';
+            const terrainStyle = document.getElementById('terrainStyle').value || 'smooth';
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
             if (tod && !/\\bTime\\s*:/i.test(prompt)) {
@@ -3997,7 +4528,8 @@ HTML = '''
                         goalByLevel: goalByLevel,
                         biomeByLevel: biomeByLevel,
                         timeOfDay: tod,
-                        quality: quality
+                        quality: quality,
+                        terrainStyle: terrainStyle
                     })
                 });
                 const data = await res.json();
@@ -4039,6 +4571,8 @@ def generate():
         # - medium: generate 1 item sprite per level
         # - high: generate 2 item sprites per level
         Config.ITEM_SPRITES_PER_LEVEL = 0 if q == "low" else (2 if q == "high" else 1)
+        terrain_style = str(data.get("terrainStyle") or "smooth").lower().strip()
+        Config.TERRAIN_STYLE = terrain_style if terrain_style in ["smooth", "classic"] else "smooth"
         
         client = OpenAIClient(config.OPENAI_API_KEY)
         
@@ -4147,6 +4681,8 @@ def main():
             ("mat_rope", "item", "thick coil of hemp rope with a knot, tan color, rugged fibers"),
             ("mat_nails", "item", "small pouch of iron nails with a few nails visible, dark metal sheen"),
             ("item_generic", "item", "simple collectible item icon: small pouch or trinket with clear silhouette"),
+            ("bridge_broken", "item", "top-down broken wooden bridge segment over water, snapped planks, visible central gap, small debris"),
+            ("bridge_fixed", "item", "top-down repaired wooden bridge segment over water, clean plank deck and rope rails"),
         ]
 
         print(f"Baking core sprites to {BAKED_SPRITES_DIR} (quality={Config.IMAGE_QUALITY})...")

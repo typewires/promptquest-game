@@ -285,13 +285,19 @@ The generator UI has a **Quality** dropdown:
 ### Sprite reuse (fewer image calls)
 To reduce cost within a multi-level run:
 - The **player sprite** is reused across all levels (consistent protagonist).
-- The **shop** and **inn** NPC sprites are generated once and reused across levels.
+- The **shop** and **inn host** NPC sprites are generated once and reused across levels.
+
+Reuse decision order for recurring NPC roles:
+- If a baked sprite exists in `assets/sprites/manifest.json`, it is used.
+- Else, if a prior level already generated that role (`npc_shop` / `npc_inn`), that image is reused.
+- Else, a new image is generated once, then reused for later levels in the same run.
 
 ### Sprite caching (disk)
 Sprite images are cached on disk so reruns can be much cheaper.
 - Cache directory: `generated_sprites/`
 - Cache key includes: image model, image quality, sprite role, and the prompt text for that sprite.
 - If a cache hit exists, the game loads the `.png` from disk and skips the OpenAI image call.
+- Terrain preview tiles are also cached locally in `generated_terrain_tiles/` for faster redraws.
 
 Note: `generated_sprites/` is ignored by git by default (it’s a local cache).
 
@@ -301,12 +307,13 @@ This project supports **baking** a small set of core sprites once at **High** qu
 If you fork this repo or make your own version, you can choose to bake your own core sprite set too. It’s optional. Everything still works without baking (the game will just generate those sprites via the image API instead).
 
 ### What Gets Baked
-Exactly **12 PNGs + 1 manifest**:
+Exactly **14 PNGs + 1 manifest**:
 
 - NPCs: `assets/sprites/npc_shop.png`, `assets/sprites/npc_inn.png`
 - Princess cure pair: `assets/sprites/npc_princess_sick.png`, `assets/sprites/npc_princess_healed.png`
 - Props: `assets/sprites/chest.png`, `assets/sprites/key.png`, `assets/sprites/door.png`, `assets/sprites/mix_station.png`
 - Bridge materials: `assets/sprites/mat_planks.png`, `assets/sprites/mat_rope.png`, `assets/sprites/mat_nails.png`
+- Bridge states: `assets/sprites/bridge_broken.png`, `assets/sprites/bridge_fixed.png`
 - Generic item icon: `assets/sprites/item_generic.png`
 - Manifest: `assets/sprites/manifest.json`
 
@@ -392,6 +399,7 @@ Some levels include enterable buildings (e.g., a shop/inn).
 - Your money is shown in the UI.
 - In a shop, press `SPACE` to talk to the shopkeeper and see buy instructions.
 - Press `1`/`2`/`3` to buy items; the UI updates your remaining money and inventory.
+- Shop visuals are shelf-based (items are displayed on different shelves rather than floor piles).
 
 ### Entering and leaving buildings
 - Approach a building’s **door** from outside.
@@ -403,9 +411,12 @@ Some levels include enterable buildings (e.g., a shop/inn).
 - Other goal types may still spawn shops (for flavor and future expansion), but `repair_bridge` is the one that currently depends on buying items.
 
 ### Inn Sleeping (Time Change)
-The inn is also interactive:
-- Walk up to a bed and press `SPACE` to rent a bed (costs gold).
-- When you exit back outside, time toggles (`day ↔ night`) and the map palette updates.
+The inn has a two-step flow:
+- Step 1: lobby check-in at the front desk (`SPACE` near inn host). Paying unlocks your numbered room.
+- Step 2: go to the room door in the lobby and enter your private room.
+- In the room, interact near the bed to sleep (same sleep logic as before, with early wake on `SPACE`).
+- After sleep, time still toggles (`day ↔ night`) and the outdoor palette updates.
+- The inn lobby includes additional guest NPCs for ambient dialogue.
 
 ## Repo Layout
 - `game_generator.py`: everything (Flask UI + generator + Pygame engine)
