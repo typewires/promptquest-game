@@ -212,6 +212,7 @@ How precedence works:
 - If prompt and UI both set the same thing for the same level, prompt wins.
 - If only UI sets it, UI is used.
 - If neither prompt nor UI sets it, the generator randomizes from valid options.
+- If you set only `Level 1 Biome` but generate 3 levels, Level 2 and Level 3 biomes/goals are auto-generated unless explicitly set.
 
 Example:
 - UI Level 2 biome = `forest`, but prompt says `Level 2 Biome: snow` → Level 2 uses `snow`.

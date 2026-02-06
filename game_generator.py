@@ -3576,7 +3576,7 @@ HTML = '''
             <div class="levels" style="margin-top:6px; display:block">
                 <label style="margin:0; color:#22d3ee;">Biomes (per level, optional)</label>
                 <div style="color:#888; font-size:12px; margin-top:6px">
-                    Set biome per level in UI or use prompt directives (e.g. <code>Level 2 Biome: snow</code>). If none is set for a level, a biome is randomized.
+                    Set biome per level in UI or use prompt directives (e.g. <code>Level 2 Biome: snow</code>). If a level is left unspecified in both UI and prompt, that level biome is auto-generated.
                 </div>
                 <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap">
                     <div style="display:flex; align-items:center; gap:8px">
@@ -3652,7 +3652,7 @@ HTML = '''
             <div class="levels" style="margin-top:10px; display:block">
                 <label style="margin:0; color:#22d3ee;">Goals (per level, optional)</label>
                 <div style="color:#888; font-size:12px; margin-top:6px">
-                    Pick goal options under each level. If you select multiple goals for a level, they will be stacked. If you leave a level blank, it will be randomized.
+                    Pick goal options under each level. If you select multiple goals for a level, they are stacked. If a level is blank in both UI and prompt, goals for that level are auto-generated.
                 </div>
                 <div style="display:flex; gap:10px; margin-top:8px">
                     <button class="ex-btn" onclick="clearGoals()" style="background:#0b1220">Auto Goals</button>
@@ -3726,6 +3726,7 @@ HTML = '''
             • Prompt directives are supported, for example: <code>Level 2 Biome: snow</code>, <code>Level 1: cure, lost_item</code>, <code>Time: night</code><br>
             • Rules: prompt overrides UI for the same level/setting. If neither prompt nor UI specifies a value, the generator randomizes from valid options<br>
             • This applies to goals and per-level biomes directly, and to map/time style when not explicitly set<br>
+            • Example: if you set <code>Level 1 Biome</code> but generate 3 levels, Level 2/3 goals and biomes are auto-generated unless you also specify them<br>
             • Your prompt can also describe character look/style (hero and NPC appearance), scene vibe, and story flavor<br>
             • Your prompt drives the setting (biome, time of day, vibe) and biases the map layout + decor<br>
             • Each level can stack multiple goal types (cure, key+door, lost item, repair bridge). You must complete all selected goals for that level.<br>
