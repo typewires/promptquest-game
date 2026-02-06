@@ -237,9 +237,12 @@ Hero look: red scarf alchemist, dark blue coat, satchel.
 
 Plain-language version of the same setup:
 
-```text
-In a lantern-lit fantasy world with high-detail character portraits, Level 1 happens at night in snow with a cure objective for a sick princess. Level 2 happens at dawn in ruins with a lost-item objective tied to an old archivist in cracked stone robes. Level 3 happens at sunset on a beach with a key-and-door objective tied to a gate warden in a blue steel cloak. The hero should look like a red-scarf alchemist in a dark blue coat with a satchel.
-```
+In a lantern-lit fantasy world with high-detail character portraits, Level 1 happens at
+night in snow with a cure objective for a sick princess. Level 2 happens at dawn in
+ruins with a lost-item objective tied to an old archivist in cracked stone robes.
+Level 3 happens at sunset on a beach with a key-and-door objective tied to a gate
+warden in a blue steel cloak. The hero should look like a red-scarf alchemist in a
+dark blue coat with a satchel.
 
 How this is interpreted:
 - The generator can infer intent from plain-language prompts (theme, likely goals, likely biome/time cues).
