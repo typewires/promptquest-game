@@ -108,6 +108,7 @@ Prompts primarily influence the **setting and vibe**:
 - Terrain style (forest/town/desert/ruins/castle/beach/snow, etc.)
 - Time of day (day/dawn/sunset/night)
 - Themed NPC + item flavor
+- You can set biome per level in UI or prompt directives; if a level biome is not specified, it is randomized from supported biomes
 
 Maps are procedurally generated from a finite set of biomes, time-of-day palettes, and layout styles, then varied by seeds and decor placement.
 
@@ -177,11 +178,44 @@ Recommended syntax:
 - `Level 1: cure`
 - `Level 2: cure, lost_item`
 - `Level 3: repair_bridge`
+- `Level 1 Biome: meadow | forest | town | beach | snow | desert | ruins | castle`
+- `Level 2 Biome: meadow | forest | town | beach | snow | desert | ruins | castle`
+- `Level 3 Biome: meadow | forest | town | beach | snow | desert | ruins | castle`
 
 Allowed goal tokens:
 - `cure`, `key_and_door`, `lost_item`, `repair_bridge`
 
 These are optional. If you omit a level directive, that level’s goal stack will be chosen from your UI selections (or randomized if left blank).
+If you omit a level biome directive and also leave that level biome blank in UI, the biome is randomly selected.
+
+### Prompt + UI Examples
+You can set the same controls in either place:
+- UI: level count, quality, per-level goals, per-level biome, optional global time
+- Prompt: explicit per-level directives plus style instructions
+
+Example prompt with explicit per-level controls:
+
+```text
+A lantern-lit kingdom road with detailed 32-bit characters.
+Time: night
+Level 1 Biome: snow
+Level 2 Biome: ruins
+Level 3 Biome: beach
+Level 1: cure
+Level 2: lost_item
+Level 3: key_and_door
+Hero look: red scarf alchemist with dark blue coat and satchel.
+NPC look: princess in pale gown, then healed and glowing.
+```
+
+How precedence works:
+- If prompt and UI both set the same thing for the same level, prompt wins.
+- If only UI sets it, UI is used.
+- If neither prompt nor UI sets it, the generator randomizes from valid options.
+
+Example:
+- UI Level 2 biome = `forest`, but prompt says `Level 2 Biome: snow` → Level 2 uses `snow`.
+- UI leaves Level 3 goals empty, and prompt has no `Level 3:` goal line → Level 3 goals are randomized.
 
 ## Cost / Quality Settings
 The generator UI has a **Quality** dropdown:

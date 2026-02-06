@@ -60,6 +60,7 @@ class Config:
 
 
 ALLOWED_GOALS = ["cure", "key_and_door", "lost_item", "repair_bridge"]
+ALLOWED_BIOMES = ["meadow", "forest", "town", "beach", "snow", "desert", "ruins", "castle"]
 
 BAKED_SPRITES_DIR = os.path.join("assets", "sprites")
 BAKED_MANIFEST_PATH = os.path.join(BAKED_SPRITES_DIR, "manifest.json")
@@ -126,6 +127,53 @@ def parse_level_goal_overrides(prompt: str) -> dict[int, list[str]]:
                 opts.append(gt)
         if idx and opts:
             out[idx] = opts
+    return out
+
+
+def normalize_biome(value: str | None) -> str | None:
+    """Return a canonical biome or None."""
+    if not value:
+        return None
+    v = str(value).strip().lower()
+    return v if v in ALLOWED_BIOMES else None
+
+
+def parse_level_biome_overrides(prompt: str) -> dict[int, str]:
+    """
+    Parse prompt directives like:
+      "Level 1 Biome: snow"
+      "level2 biome - desert"
+      "Level 3: ... Biome: ruins"
+    Returns a 1-based map: {1: "snow", 2: "desert", 3: "ruins"}.
+    """
+    if not prompt:
+        return {}
+    out: dict[int, str] = {}
+    lines = str(prompt).splitlines()
+    direct_pat = re.compile(r"(?i)\blevel\s*([1-3])\s*biome\s*[:\-]\s*([a-z_]+)\b")
+    level_pat = re.compile(r"(?i)\blevel\s*([1-3])\s*[:\-]\s*(.+)$")
+    biome_pat = re.compile(r"(?i)\b(" + "|".join(ALLOWED_BIOMES) + r")\b")
+
+    for line in lines:
+        m = direct_pat.search(line)
+        if m:
+            idx = int(m.group(1))
+            b = normalize_biome(m.group(2))
+            if b:
+                out[idx] = b
+            continue
+
+        lm = level_pat.search(line)
+        if not lm:
+            continue
+        idx = int(lm.group(1))
+        tail = str(lm.group(2) or "")
+        bm = biome_pat.search(tail)
+        if not bm:
+            continue
+        b = normalize_biome(bm.group(1))
+        if b:
+            out[idx] = b
     return out
 
 
@@ -196,6 +244,39 @@ def build_quest_plans(prompt: str, by_level_raw: list, level_count: int) -> list
         if pick not in used:
             used.append(pick)
 
+    return plans
+
+
+def build_biome_plans(prompt: str, by_level_raw: list, level_count: int) -> list[str]:
+    """
+    Build a per-level biome plan.
+    Priority per level:
+    1) Explicit prompt override (Level N Biome: ...)
+    2) UI-selected biome for that level
+    3) Random fallback biome
+    """
+    level_count = max(1, min(3, int(level_count)))
+    overrides = parse_level_biome_overrides(prompt)
+
+    ui_by_level: dict[int, str] = {}
+    for i in range(min(3, len(by_level_raw or []))):
+        b = normalize_biome(by_level_raw[i])
+        if b:
+            ui_by_level[i + 1] = b
+
+    plans: list[str] = []
+    used: list[str] = []
+    for lvl in range(1, level_count + 1):
+        if overrides.get(lvl):
+            b = overrides[lvl]
+        elif ui_by_level.get(lvl):
+            b = ui_by_level[lvl]
+        else:
+            candidates = [x for x in ALLOWED_BIOMES if x not in used] or list(ALLOWED_BIOMES)
+            b = random.choice(candidates)
+        plans.append(b)
+        if b not in used:
+            used.append(b)
     return plans
 
 
@@ -1304,6 +1385,12 @@ class SpriteGenerator:
         if reuse_img is not None:
             return reuse_img
         return self._gen(desc, role=role, theme=theme)
+
+    def _emit_sprite(self, sprites: dict, key: str, label: str, loader):
+        """Small helper to keep sprite-generation flow readable."""
+        print(f"  {label}...")
+        sprites[key] = loader()
+        time.sleep(self.delay)
     
     def generate_all(self, game: dict, reuse_player_sprite: Image.Image | None = None) -> dict:
         sprites = {}
@@ -1315,55 +1402,73 @@ class SpriteGenerator:
         theme = f"{game.get('terrain', {}).get('type', '')} {game.get('time_of_day', 'day')} {game.get('story', '')}"
         
         if reuse_player_sprite is None:
-            print("  Player...")
-            sprites["player"] = self._gen(game["player"]["sprite_desc"], role="player", theme=theme)
-            time.sleep(self.delay)
+            self._emit_sprite(
+                sprites,
+                "player",
+                "Player",
+                lambda: self._gen(game["player"]["sprite_desc"], role="player", theme=theme),
+            )
         else:
             sprites["player"] = reuse_player_sprite
         
-        print("  NPC...")
-        sprites["npc"] = self._gen(game["npc"]["sprite_desc"], role="npc", theme=theme)
-        time.sleep(self.delay)
+        self._emit_sprite(
+            sprites,
+            "npc",
+            "NPC",
+            lambda: self._gen(game["npc"]["sprite_desc"], role="npc", theme=theme),
+        )
 
         # Indoor NPCs: reuse across levels when possible to reduce API calls.
         reuse_shop = game.get("_reuse_sprites", {}).get("npc_shop")
         reuse_inn = game.get("_reuse_sprites", {}).get("npc_inn")
 
-        print("  npc_shop...")
-        sprites["npc_shop"] = self._baked_reuse_or_gen(
-            baked_key="npc_shop",
-            reuse_img=reuse_shop,
-            desc="shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
-            role="npc",
-            theme=theme,
+        self._emit_sprite(
+            sprites,
+            "npc_shop",
+            "npc_shop",
+            lambda: self._baked_reuse_or_gen(
+                baked_key="npc_shop",
+                reuse_img=reuse_shop,
+                desc="shopkeeper in layered robes and apron, potion vials on belt, kind face, distinctive hat or hood",
+                role="npc",
+                theme=theme,
+            ),
         )
-        time.sleep(self.delay)
 
-        print("  npc_inn...")
-        sprites["npc_inn"] = self._baked_reuse_or_gen(
-            baked_key="npc_inn",
-            reuse_img=reuse_inn,
-            desc="innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
-            role="npc",
-            theme=theme,
+        self._emit_sprite(
+            sprites,
+            "npc_inn",
+            "npc_inn",
+            lambda: self._baked_reuse_or_gen(
+                baked_key="npc_inn",
+                reuse_img=reuse_inn,
+                desc="innkeeper in warm tavern clothes (vest, rolled sleeves), friendly smile, holding a towel or mug, cozy vibe",
+                role="npc",
+                theme=theme,
+            ),
         )
-        time.sleep(self.delay)
         
         # Quest items: generate up to N sprites based on Config.ITEM_SPRITES_PER_LEVEL.
         # Remaining items use a baked generic icon (if provided) or reuse the first generated sprite.
         baked_generic = _load_baked_sprite("item_generic")
         if items:
             if Config.ITEM_SPRITES_PER_LEVEL >= 1:
-                print("  Item...")
-                sprites["item"] = self._gen(items[0]["sprite_desc"], role="item", theme=theme)
-                time.sleep(self.delay)
+                self._emit_sprite(
+                    sprites,
+                    "item",
+                    "Item",
+                    lambda: self._gen(items[0]["sprite_desc"], role="item", theme=theme),
+                )
             else:
                 sprites["item"] = baked_generic if baked_generic is not None else self._gen("simple collectible item icon", role="item", theme=theme)
             if len(items) > 1:
                 if Config.ITEM_SPRITES_PER_LEVEL >= 2:
-                    print("  Second item...")
-                    sprites["item2"] = self._gen(items[1]["sprite_desc"], role="item", theme=theme)
-                    time.sleep(self.delay)
+                    self._emit_sprite(
+                        sprites,
+                        "item2",
+                        "Second item",
+                        lambda: self._gen(items[1]["sprite_desc"], role="item", theme=theme),
+                    )
                 else:
                     sprites["item2"] = baked_generic if baked_generic is not None else sprites.get("item")
         else:
@@ -1375,107 +1480,112 @@ class SpriteGenerator:
 
         # Quest-specific props (supports stacked goals per level).
         if "cure" in quest_types:
-            print("  Sick NPC...")
-            # Use a dedicated sick sprite for clarity in-game.
             npc = game.get("npc", {}) or {}
-            baked_princess_sick = _load_baked_sprite("npc_princess_sick") if _looks_like_princess(npc) else None
-            baked_sick = _load_baked_sprite("npc_sick")
-            sprites["npc_sick"] = (
-                baked_princess_sick
-                if baked_princess_sick is not None
-                else (baked_sick if baked_sick is not None else self._gen(
-                    npc.get("sprite_desc", "sick fantasy NPC with pale skin and tired eyes"),
-                    role="npc",
-                    theme=theme
-                ))
+            self._emit_sprite(
+                sprites,
+                "npc_sick",
+                "Sick NPC",
+                lambda: (
+                    (_load_baked_sprite("npc_princess_sick") if _looks_like_princess(npc) else None)
+                    or _load_baked_sprite("npc_sick")
+                    or self._gen(
+                        npc.get("sprite_desc", "sick fantasy NPC with pale skin and tired eyes"),
+                        role="npc",
+                        theme=theme,
+                    )
+                ),
             )
-            time.sleep(self.delay)
 
-            print("  Mix station...")
             mix = quest.get("mix_station", {})
-            sprites["mix_station"] = self._baked_or_gen(
-                baked_key="mix_station",
-                desc=mix.get("sprite_desc", "small potion cauldron"),
-                role="cauldron",
-                theme=theme,
+            self._emit_sprite(
+                sprites,
+                "mix_station",
+                "Mix station",
+                lambda: self._baked_or_gen(
+                    baked_key="mix_station",
+                    desc=mix.get("sprite_desc", "small potion cauldron"),
+                    role="cauldron",
+                    theme=theme,
+                ),
             )
-            time.sleep(self.delay)
 
-            print("  Healed NPC...")
-            baked_princess_healed = _load_baked_sprite("npc_princess_healed") if _looks_like_princess(npc) else None
-            baked_healed = _load_baked_sprite("npc_healed")
-            sprites["npc_healed"] = (
-                baked_princess_healed
-                if baked_princess_healed is not None
-                else (baked_healed if baked_healed is not None else self._gen(
-                    quest.get("npc_healed_sprite_desc", "healthy smiling villager"),
-                    role="npc_healed",
-                    theme=theme
-                ))
+            self._emit_sprite(
+                sprites,
+                "npc_healed",
+                "Healed NPC",
+                lambda: (
+                    (_load_baked_sprite("npc_princess_healed") if _looks_like_princess(npc) else None)
+                    or _load_baked_sprite("npc_healed")
+                    or self._gen(
+                        quest.get("npc_healed_sprite_desc", "healthy smiling villager"),
+                        role="npc_healed",
+                        theme=theme,
+                    )
+                ),
             )
-            time.sleep(self.delay)
 
         if "key_and_door" in quest_types:
-            print("  Chest...")
             chest = quest.get("chest", {})
-            sprites["chest"] = self._baked_or_gen(
-                baked_key="chest",
-                desc=chest.get("sprite_desc", "old wooden chest"),
-                role="chest",
-                theme=theme,
+            self._emit_sprite(
+                sprites,
+                "chest",
+                "Chest",
+                lambda: self._baked_or_gen(
+                    baked_key="chest",
+                    desc=chest.get("sprite_desc", "old wooden chest"),
+                    role="chest",
+                    theme=theme,
+                ),
             )
-            time.sleep(self.delay)
 
-            print("  Key...")
             key = quest.get("key", {})
-            sprites["key"] = self._baked_or_gen(
-                baked_key="key",
-                desc=key.get("sprite_desc", "old brass key"),
-                role="key",
-                theme=theme,
+            self._emit_sprite(
+                sprites,
+                "key",
+                "Key",
+                lambda: self._baked_or_gen(
+                    baked_key="key",
+                    desc=key.get("sprite_desc", "old brass key"),
+                    role="key",
+                    theme=theme,
+                ),
             )
-            time.sleep(self.delay)
 
-            print("  Door...")
             door = quest.get("door", {})
-            sprites["door"] = self._baked_or_gen(
-                baked_key="door",
-                desc=door.get("sprite_desc", "stone door"),
-                role="door",
-                theme=theme,
+            self._emit_sprite(
+                sprites,
+                "door",
+                "Door",
+                lambda: self._baked_or_gen(
+                    baked_key="door",
+                    desc=door.get("sprite_desc", "stone door"),
+                    role="door",
+                    theme=theme,
+                ),
             )
-            time.sleep(self.delay)
 
         # Repair materials (used by the shop UI + visuals)
         if "repair_bridge" in quest_types:
             mats = {it.get("id"): it for it in (quest.get("repair_materials") or [])}
-            if "planks" in mats:
-                print("  Planks...")
-                sprites["mat_planks"] = self._baked_or_gen(
-                    baked_key="mat_planks",
-                    desc=mats["planks"].get("sprite_desc", "stack of wooden planks tied with rope"),
-                    role="item",
-                    theme=theme,
+            mat_specs = [
+                ("planks", "mat_planks", "Planks", "stack of wooden planks tied with rope"),
+                ("rope", "mat_rope", "Rope", "coiled rope with a knot, tan color"),
+                ("nails", "mat_nails", "Nails", "small pouch of iron nails with a few nails visible"),
+            ]
+            for mat_id, sprite_key, label, default_desc in mat_specs:
+                if mat_id not in mats:
+                    continue
+                self._emit_sprite(
+                    sprites,
+                    sprite_key,
+                    label,
+                    lambda m=mats[mat_id], k=sprite_key, d=default_desc: self._baked_or_gen(
+                        baked_key=k,
+                        desc=m.get("sprite_desc", d),
+                        role="item",
+                        theme=theme,
+                    ),
                 )
-                time.sleep(self.delay)
-            if "rope" in mats:
-                print("  Rope...")
-                sprites["mat_rope"] = self._baked_or_gen(
-                    baked_key="mat_rope",
-                    desc=mats["rope"].get("sprite_desc", "coiled rope with a knot, tan color"),
-                    role="item",
-                    theme=theme,
-                )
-                time.sleep(self.delay)
-            if "nails" in mats:
-                print("  Nails...")
-                sprites["mat_nails"] = self._baked_or_gen(
-                    baked_key="mat_nails",
-                    desc=mats["nails"].get("sprite_desc", "small pouch of iron nails with a few nails visible"),
-                    role="item",
-                    theme=theme,
-                )
-                time.sleep(self.delay)
         
         total_calls = len(sprites)
         print(f"\n  Total API calls: {total_calls}")
@@ -2579,14 +2689,15 @@ class GameEngine:
     def _all_goals_complete(self) -> bool:
         """Return True if every selected goal type for this level has been completed."""
         types = set(getattr(self, "quest_types", []) or [])
-        if "cure" in types and not getattr(self, "npc_healed", False):
-            return False
-        if "lost_item" in types and not getattr(self, "lost_item_returned", False):
-            return False
-        if "key_and_door" in types and not getattr(self, "door_opened", False):
-            return False
-        if "repair_bridge" in types and not getattr(self, "bridge_repaired", False):
-            return False
+        done_flags = {
+            "cure": bool(getattr(self, "npc_healed", False)),
+            "lost_item": bool(getattr(self, "lost_item_returned", False)),
+            "key_and_door": bool(getattr(self, "door_opened", False)),
+            "repair_bridge": bool(getattr(self, "bridge_repaired", False)),
+        }
+        for goal in types:
+            if goal in done_flags and not done_flags[goal]:
+                return False
         return True
 
     def _quest_step_states(self):
@@ -3349,7 +3460,7 @@ HTML = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>🎮 Game Generator v7</title>
+    <title>🎮 Game Generator</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -3429,7 +3540,7 @@ HTML = '''
 </head>
 <body>
     <div class="container">
-        <h1>🎮 Game Generator v7</h1>
+        <h1>🎮 Game Generator</h1>
         <p class="subtitle">Prompt‑Driven Adventure Generator <span class="tag">NEW</span></p>
         
         <div class="card">
@@ -3446,6 +3557,82 @@ HTML = '''
                 <button class="ex-btn" onclick="setEx('A magical forest at dawn with glowing mushrooms and fairy dust')">🌲 Forest</button>
                 <button class="ex-btn" onclick="setEx('A snowy mountain village with lost mittens and a kind yeti')">❄️ Snow</button>
                 <button class="ex-btn" onclick="setEx('A moonlit garden with fireflies and hidden gems')">🌙 Night</button>
+            </div>
+            <div class="levels">
+                <label style="margin:0; color:#22d3ee;">Biome</label>
+                <select id="biomeSelect" style="width:220px; padding:10px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                    <option value="">Auto (from prompt/random)</option>
+                    <option value="meadow">Meadow</option>
+                    <option value="forest">Forest</option>
+                    <option value="town">Town</option>
+                    <option value="beach">Beach</option>
+                    <option value="snow">Snow</option>
+                    <option value="desert">Desert</option>
+                    <option value="ruins">Ruins</option>
+                    <option value="castle">Castle</option>
+                </select>
+                <span style="color:#888; font-size:12px;">(optional)</span>
+            </div>
+            <div class="levels" style="margin-top:6px; display:block">
+                <label style="margin:0; color:#22d3ee;">Biomes (per level, optional)</label>
+                <div style="color:#888; font-size:12px; margin-top:6px">
+                    Set biome per level in UI or use prompt directives (e.g. <code>Level 2 Biome: snow</code>). If none is set for a level, a biome is randomized.
+                </div>
+                <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap">
+                    <div style="display:flex; align-items:center; gap:8px">
+                        <span style="width:56px; color:#cbd5e1; font-size:13px">Level 1</span>
+                        <select id="biomeL1" style="width:160px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                            <option value="">Auto</option>
+                            <option value="meadow">Meadow</option>
+                            <option value="forest">Forest</option>
+                            <option value="town">Town</option>
+                            <option value="beach">Beach</option>
+                            <option value="snow">Snow</option>
+                            <option value="desert">Desert</option>
+                            <option value="ruins">Ruins</option>
+                            <option value="castle">Castle</option>
+                        </select>
+                    </div>
+                    <div id="biomeL2Wrap" style="display:flex; align-items:center; gap:8px">
+                        <span style="width:56px; color:#cbd5e1; font-size:13px">Level 2</span>
+                        <select id="biomeL2" style="width:160px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                            <option value="">Auto</option>
+                            <option value="meadow">Meadow</option>
+                            <option value="forest">Forest</option>
+                            <option value="town">Town</option>
+                            <option value="beach">Beach</option>
+                            <option value="snow">Snow</option>
+                            <option value="desert">Desert</option>
+                            <option value="ruins">Ruins</option>
+                            <option value="castle">Castle</option>
+                        </select>
+                    </div>
+                    <div id="biomeL3Wrap" style="display:flex; align-items:center; gap:8px">
+                        <span style="width:56px; color:#cbd5e1; font-size:13px">Level 3</span>
+                        <select id="biomeL3" style="width:160px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                            <option value="">Auto</option>
+                            <option value="meadow">Meadow</option>
+                            <option value="forest">Forest</option>
+                            <option value="town">Town</option>
+                            <option value="beach">Beach</option>
+                            <option value="snow">Snow</option>
+                            <option value="desert">Desert</option>
+                            <option value="ruins">Ruins</option>
+                            <option value="castle">Castle</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="levels">
+                <label style="margin:0; color:#22d3ee;">Time of Day</label>
+                <select id="timeSelect" style="width:220px; padding:10px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                    <option value="">Auto (from prompt/random)</option>
+                    <option value="day">Day</option>
+                    <option value="dawn">Dawn</option>
+                    <option value="sunset">Sunset</option>
+                    <option value="night">Night</option>
+                </select>
+                <span style="color:#888; font-size:12px;">(optional)</span>
             </div>
             <button class="rand-btn" onclick="randomPrompt()">🎲 Generate Random Prompt</button>
             <div class="levels">
@@ -3535,6 +3722,11 @@ HTML = '''
         
         <div class="card features">
             <b>✨ How Generation Works:</b><br>
+            • You can configure in UI or prompt: biome (per level), time of day, level count, quality, and per-level goals<br>
+            • Prompt directives are supported, for example: <code>Level 2 Biome: snow</code>, <code>Level 1: cure, lost_item</code>, <code>Time: night</code><br>
+            • Rules: prompt overrides UI for the same level/setting. If neither prompt nor UI specifies a value, the generator randomizes from valid options<br>
+            • This applies to goals and per-level biomes directly, and to map/time style when not explicitly set<br>
+            • Your prompt can also describe character look/style (hero and NPC appearance), scene vibe, and story flavor<br>
             • Your prompt drives the setting (biome, time of day, vibe) and biases the map layout + decor<br>
             • Each level can stack multiple goal types (cure, key+door, lost item, repair bridge). You must complete all selected goals for that level.<br>
             • Pick goals in the UI, or write directives like <code>Level 2: repair_bridge</code> in your prompt<br>
@@ -3599,6 +3791,14 @@ HTML = '''
             document.querySelectorAll('.goalOptL1, .goalOptL2, .goalOptL3').forEach(e => { e.checked = false; });
         }
 
+        function biomesByLevel() {
+            return [
+                document.getElementById('biomeL1').value || '',
+                document.getElementById('biomeL2').value || '',
+                document.getElementById('biomeL3').value || '',
+            ];
+        }
+
         function randomGoals() {
             clearGoals();
             const all = ['cure','key_and_door','lost_item','repair_bridge'];
@@ -3621,6 +3821,8 @@ HTML = '''
             const show3 = levels >= 3;
             document.getElementById('goalL2').style.display = show2 ? 'block' : 'none';
             document.getElementById('goalL3').style.display = show3 ? 'block' : 'none';
+            document.getElementById('biomeL2Wrap').style.display = show2 ? 'flex' : 'none';
+            document.getElementById('biomeL3Wrap').style.display = show3 ? 'flex' : 'none';
         }
 
         function goalsByLevel() {
@@ -3633,12 +3835,22 @@ HTML = '''
         }
         async function generate() {
             const key = document.getElementById('apiKey').value;
-            const prompt = document.getElementById('prompt').value;
+            let prompt = document.getElementById('prompt').value;
+            const biome = document.getElementById('biomeSelect').value || '';
+            const tod = document.getElementById('timeSelect').value || '';
             const levels = parseInt(document.getElementById('levels').value || '3', 10);
             const goalByLevel = goalsByLevel();
+            const biomeByLevel = biomesByLevel();
             const quality = document.getElementById('quality').value || 'medium';
             if (!key) return alert('Enter API key!');
             if (!prompt) return alert('Describe your world!');
+            // If user picked a biome explicitly, inject a stable token if prompt does not already have one.
+            if (biome && !/\\bBiome\\s*:/i.test(prompt)) {
+                prompt = `${prompt.trim()} Biome: ${biome}.`;
+            }
+            if (tod && !/\\bTime\\s*:/i.test(prompt)) {
+                prompt = `${prompt.trim()} Time: ${tod}.`;
+            }
             document.getElementById('btn').disabled = true;
             const status = document.getElementById('status');
             status.style.display = 'block';
@@ -3646,7 +3858,14 @@ HTML = '''
             try {
                 const res = await fetch('/generate', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({apiKey: key, prompt: prompt, levels: levels, goalByLevel: goalByLevel, quality: quality})
+                    body: JSON.stringify({
+                        apiKey: key,
+                        prompt: prompt,
+                        levels: levels,
+                        goalByLevel: goalByLevel,
+                        biomeByLevel: biomeByLevel,
+                        quality: quality
+                    })
                 });
                 const data = await res.json();
                 status.innerHTML = data.success ? '✅ Done! Go to terminal and press ENTER!' : '❌ ' + data.error;
@@ -3702,7 +3921,9 @@ def generate():
 
         prompt = data.get("prompt", "")
         by_level_raw = data.get("goalByLevel") or []
+        biome_by_level_raw = data.get("biomeByLevel") or []
         quest_plans = build_quest_plans(prompt=prompt, by_level_raw=by_level_raw, level_count=level_count)
+        biome_plans = build_biome_plans(prompt=prompt, by_level_raw=biome_by_level_raw, level_count=level_count)
 
         base_player = None
         base_player_sprite = None
@@ -3715,6 +3936,8 @@ def generate():
                 if i == 0
                 else f"{data['prompt']} -- New area {i+1} with different terrain, new NPC, and new objectives."
             )
+            # Force/seed level biome from prompt or UI plan, with random fallback already resolved.
+            level_prompt = f"{level_prompt} Level {i+1} Biome: {biome_plans[i]}."
             game = designer.design_game(level_prompt, quest_plan_override=quest_plans[i])
             if base_player is None:
                 base_player = game["player"]
