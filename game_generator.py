@@ -1486,6 +1486,16 @@ class SpriteGenerator:
         baked = _load_baked_sprite(baked_key)
         return baked if baked is not None else self._gen(desc, role=role, theme=theme)
 
+    def _baked_scene_or_gen(self, baked_key: str, desc: str, theme: str) -> Image.Image:
+        """
+        Scene assets are intended to be prebaked and shared, but we keep a generation fallback
+        so local development is not blocked.
+        """
+        baked = _load_baked_sprite(baked_key)
+        if baked is not None:
+            return baked
+        return self._gen(desc, role="item", theme=theme)
+
     def _baked_reuse_or_gen(
         self,
         baked_key: str,
@@ -1537,6 +1547,10 @@ class SpriteGenerator:
         # Indoor NPCs: reuse across levels when possible to reduce API calls.
         reuse_shop = game.get("_reuse_sprites", {}).get("npc_shop")
         reuse_inn = game.get("_reuse_sprites", {}).get("npc_inn")
+        reuse_guest_a = game.get("_reuse_sprites", {}).get("npc_guest_a")
+        reuse_guest_b = game.get("_reuse_sprites", {}).get("npc_guest_b")
+        reuse_building_shop = game.get("_reuse_sprites", {}).get("building_shop")
+        reuse_building_inn = game.get("_reuse_sprites", {}).get("building_inn")
 
         self._emit_sprite(
             sprites,
@@ -1563,6 +1577,97 @@ class SpriteGenerator:
                 theme=theme,
             ),
         )
+
+        # Inn guests to avoid repeated same-face NPCs in lobby.
+        self._emit_sprite(
+            sprites,
+            "npc_guest_a",
+            "npc_guest_a",
+            lambda: self._baked_reuse_or_gen(
+                baked_key="npc_guest_a",
+                reuse_img=reuse_guest_a,
+                desc="ONE full-body inn guest sprite, top-down RPG pixel style, unique outfit and silhouette, transparent background, no frame",
+                role="npc",
+                theme="retro-rpg-interior",
+            ),
+        )
+        self._emit_sprite(
+            sprites,
+            "npc_guest_b",
+            "npc_guest_b",
+            lambda: self._baked_reuse_or_gen(
+                baked_key="npc_guest_b",
+                reuse_img=reuse_guest_b,
+                desc="ONE full-body inn guest sprite, top-down RPG pixel style, different hair/clothes from guest A, transparent background, no frame",
+                role="npc",
+                theme="retro-rpg-interior",
+            ),
+        )
+
+        # Building/interior set pieces (prefer baked).
+        interior_style_theme = "retro-rpg-interior"
+        env_props = [
+            ("building_shop", "Shop exterior", "pixel-art top-down RPG shop building exterior with red roof, centered door, windows", reuse_building_shop),
+            ("building_inn", "Inn exterior", "pixel-art top-down RPG inn building exterior, warm roof, large entrance, welcoming sign", reuse_building_inn),
+            ("shop_counter", "Shop counter", "top-down pixel RPG shop counter, polished wood, books and potion bottles, transparent background"),
+            ("shop_shelf", "Shop shelf", "top-down pixel RPG wall shelf full of colorful bottles and goods, transparent background"),
+            ("inn_desk", "Inn desk", "top-down pixel RPG inn reception desk with bell and ledger, transparent background"),
+            ("inn_bed", "Inn bed", "top-down pixel RPG inn bedroom bed with blanket and pillow, transparent background"),
+            ("inn_room_door", "Inn room door", "top-down pixel RPG wooden room door with number plaque and handle, transparent background"),
+        ]
+        for row in env_props:
+            if len(row) == 4:
+                key, label, desc, reuse_img = row
+            else:
+                key, label, desc = row
+                reuse_img = None
+            self._emit_sprite(
+                sprites,
+                key,
+                label,
+                (
+                    (lambda k=key, d=desc, rimg=reuse_img: self._baked_reuse_or_gen(
+                        baked_key=k,
+                        reuse_img=rimg,
+                        desc=d,
+                        role="item",
+                        theme=interior_style_theme,
+                    ))
+                    if reuse_img is not None
+                    else (lambda k=key, d=desc: self._baked_or_gen(
+                        baked_key=k,
+                        desc=d,
+                        role="item",
+                        theme=interior_style_theme,
+                    ))
+                ),
+            )
+
+        # Fixed scene backdrops (no characters). These should be baked for consistent shared visuals.
+        scene_specs = [
+            (
+                "scene_shop_interior",
+                "Shop scene",
+                "top-down RPG pixel-art alchemy shop interior, no people, no text, no UI, no frame, shelves and counter visible",
+            ),
+            (
+                "scene_inn_lobby",
+                "Inn lobby scene",
+                "top-down RPG pixel-art inn lobby interior, no people, no text, no UI, no frame, front desk, hallway room doors attached to wall, tables and warm lighting",
+            ),
+            (
+                "scene_inn_room",
+                "Inn room scene",
+                "top-down RPG pixel-art cozy inn bedroom, no people, no text, no UI, no frame, bed, fireplace, side table, wardrobe",
+            ),
+        ]
+        for key, label, desc in scene_specs:
+            self._emit_sprite(
+                sprites,
+                key,
+                label,
+                lambda k=key, d=desc: self._baked_scene_or_gen(k, d, "retro-rpg-interior"),
+            )
         
         # Quest items: generate up to N sprites based on Config.ITEM_SPRITES_PER_LEVEL.
         # Remaining items use a baked generic icon (if provided) or reuse the first generated sprite.
@@ -2303,14 +2408,14 @@ class TerrainRenderer:
                     self.bushes.append((x, y))
 
         if "trees" in self.features:
-            scatter_cluster("tree", count=rand(6, 14), clusters=rand(2, 4))
+            scatter_cluster("tree", count=rand(5, 10), clusters=rand(2, 3))
         if "rocks" in self.features:
-            scatter_cluster("rock", count=rand(4, 9), clusters=rand(2, 3))
+            scatter_cluster("rock", count=rand(3, 6), clusters=rand(2, 3))
         # Always some bushes, but more/less depending on style.
-        scatter_cluster("bush", count=rand(6, 14), clusters=rand(2, 4))
+        scatter_cluster("bush", count=rand(4, 9), clusters=rand(2, 3))
 
         if "flowers" in self.features:
-            for _ in range(rand(18, 40)):
+            for _ in range(rand(10, 20)):
                 fx, fy = rand(0, self.mw - 1), rand(0, self.mh - 1)
                 if (fx, fy) in self.water_tiles or (fx, fy) in self.path_tiles:
                     continue
@@ -2322,25 +2427,25 @@ class TerrainRenderer:
                 ))
 
         # Lamps/signs/ruins/fences (distinct landmarks)
-        for _ in range(rand(2, 7)):
+        for _ in range(rand(2, 4)):
             lx, ly = rand(1, self.mw - 2), rand(1, self.mh - 2)
             if (lx, ly) not in self.water_tiles and (lx, ly) in self.path_tiles:
                 self.lamps.append((lx, ly))
 
-        for _ in range(rand(2, 6)):
+        for _ in range(rand(1, 3)):
             sx, sy = rand(1, self.mw - 2), rand(1, self.mh - 2)
             if (sx, sy) not in self.water_tiles and (sx, sy) not in self.path_tiles:
                 self.signs.append((sx, sy))
 
         # Ruins become more likely in certain layouts.
         if "ruins" in self.features or str(self.layout_style) in ["ruin_ring"]:
-            for _ in range(rand(3, 7)):
+            for _ in range(rand(2, 4)):
                 rx, ry = rand(1, self.mw - 2), rand(1, self.mh - 2)
                 if (rx, ry) not in self.water_tiles and (rx, ry) not in self.path_tiles:
                     self.ruins.append((rx, ry))
 
         # Light fencing around some path edges for variety (non-solid visual).
-        for _ in range(rand(8, 18)):
+        for _ in range(rand(5, 10)):
             fx, fy = rand(1, self.mw - 2), rand(1, self.mh - 2)
             if (fx, fy) in self.path_tiles and (fx, fy) not in self.water_tiles:
                 if chance(0.35):
@@ -2364,18 +2469,18 @@ class TerrainRenderer:
 
         tags = self.theme_tags
         if "desert" in tags:
-            sprinkle(self.cacti, count=rand(4, 9))
+            sprinkle(self.cacti, count=rand(3, 6))
         if "beach" in tags:
-            sprinkle(self.shells, count=rand(6, 14))
+            sprinkle(self.shells, count=rand(4, 8))
         if "snow" in tags:
-            sprinkle(self.snow_piles, count=rand(5, 12))
+            sprinkle(self.snow_piles, count=rand(3, 7))
         if "town" in tags or "market" in tags or "bazaar" in tags or "port" in tags or "harbor" in tags:
-            sprinkle(self.crates, count=rand(3, 8), avoid_path=False)
+            sprinkle(self.crates, count=rand(2, 5), avoid_path=False)
         if "ruins" in tags or "temple" in tags or "castle" in tags:
-            sprinkle(self.statues, count=rand(2, 5), avoid_path=False)
-            sprinkle(self.vines, count=rand(6, 14), avoid_path=False)
+            sprinkle(self.statues, count=rand(1, 3), avoid_path=False)
+            sprinkle(self.vines, count=rand(4, 8), avoid_path=False)
         if "forest" in tags and ("night" in tags or "mushroom" in tags):
-            sprinkle(self.mushrooms, count=rand(6, 14))
+            sprinkle(self.mushrooms, count=rand(4, 8))
     
     def draw(self, screen, t: float = 0.0):
         ts = self.ts
@@ -2647,11 +2752,16 @@ class InteriorRenderer:
 
     def draw(self, screen, t: float = 0.0):
         ts = self.ts
-        # Floor
+        # Floor base (retro RPG wood/parlor style, less checkerboardy)
         for y in range(self.mh):
             for x in range(self.mw):
-                c = self.floor if (x + y) % 2 == 0 else self.floor2
+                c = self.floor if ((x + y) % 3 != 0) else self.floor2
                 pygame.draw.rect(screen, c, (x * ts, y * ts, ts, ts))
+                # Plank seams + tiny knots to avoid flat brown blocks.
+                seam = (92, 74, 60)
+                pygame.draw.line(screen, seam, (x * ts, y * ts + ts - 2), (x * ts + ts, y * ts + ts - 2), 1)
+                if (x + y) % 4 == 0:
+                    pygame.draw.circle(screen, (120, 96, 76), (x * ts + ts // 2, y * ts + ts // 2), 2)
         # Walls (border)
         for x in range(self.mw):
             pygame.draw.rect(screen, self.wall, (x * ts, 0, ts, ts))
@@ -2659,6 +2769,9 @@ class InteriorRenderer:
         for y in range(self.mh):
             pygame.draw.rect(screen, self.wall, (0, y * ts, ts, ts))
             pygame.draw.rect(screen, self.wall, ((self.mw - 1) * ts, y * ts, ts, ts))
+
+        # Wall trim band
+        pygame.draw.rect(screen, self.wall2, (ts, ts, (self.mw - 2) * ts, ts // 4))
 
         # Doorway on bottom wall
         dx = self.door_x
@@ -2672,33 +2785,43 @@ class InteriorRenderer:
 
         # Theme decor
         if self.theme in ["shop", "apothecary"]:
-            # Shelves / decor
+            # Shelves / decor anchored to top/side walls.
             for x in range(2, self.mw - 2, 4):
-                pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 3 - 12, 10))
+                pygame.draw.rect(screen, self.shelf, (x * ts + 6, 2 * ts + 10, ts * 3 - 12, 12), border_radius=3)
                 # Bottles
                 bx = x * ts + 16
                 by = 2 * ts + 2
                 pygame.draw.rect(screen, self.accent, (bx, by + 14, 10, 14), border_radius=2)
                 pygame.draw.rect(screen, (200, 120, 255), (bx + 22, by + 18, 10, 10), border_radius=2)
                 pygame.draw.rect(screen, (120, 255, 180), (bx + 44, by + 16, 10, 12), border_radius=2)
+                pygame.draw.rect(screen, (255, 210, 120), (bx + 58, by + 12, 8, 16), border_radius=2)
 
-            # Counter near the middle
+            # Main counter
             cx = self.mw // 2
             pygame.draw.rect(screen, self.shelf, (cx * ts - ts * 2, 6 * ts, ts * 4, ts), border_radius=6)
             pygame.draw.rect(screen, (60, 40, 30), (cx * ts - ts * 2 + 10, 6 * ts + 10, ts * 4 - 20, ts - 18), border_radius=6)
+            # Rug + side barrels
+            pygame.draw.rect(screen, (84, 96, 142), (cx * ts - ts * 2, 8 * ts, ts * 4, ts * 2), border_radius=10)
+            pygame.draw.rect(screen, (125, 90, 64), (2 * ts - 10, 8 * ts + 8, ts, ts), border_radius=8)
+            pygame.draw.rect(screen, (125, 90, 64), ((self.mw - 3) * ts + 8, 8 * ts + 8, ts, ts), border_radius=8)
+            # Wall accents
+            pygame.draw.rect(screen, (190, 150, 110), (2 * ts, ts + 10, ts, ts // 2), border_radius=4)
+            pygame.draw.rect(screen, (130, 170, 210), (self.mw * ts - 3 * ts, ts + 10, ts, ts // 2), border_radius=4)
         elif self.theme in ["inn", "inn_lobby"]:
-            # Reception counter near top.
+            # Reception counter near top wall.
             pygame.draw.rect(screen, self.shelf, (self.mw // 2 * ts - ts * 2, 2 * ts, ts * 4, ts), border_radius=6)
             pygame.draw.rect(screen, (80, 56, 38), (self.mw // 2 * ts - ts * 2 + 8, 2 * ts + 8, ts * 4 - 16, ts - 14), border_radius=6)
-            sign = pygame.draw.rect(screen, (120, 84, 56), (self.mw // 2 * ts - 40, ts + 12, 80, 18), border_radius=4)
-            # Guest room hallway doors with numbers.
-            door_y = 5 * ts
+            pygame.draw.rect(screen, (120, 84, 56), (self.mw // 2 * ts - 40, ts + 12, 80, 18), border_radius=4)
+            txt = self._small_font().render("LODGING", True, (245, 228, 180))
+            screen.blit(txt, (self.mw // 2 * ts - 32, ts + 15))
+            # Guest room hallway doors with numbers, attached to wall.
+            door_y = 1 * ts
             hall_xs = [2 * ts, 5 * ts, 8 * ts, 11 * ts]
             for idx, dx in enumerate(hall_xs, start=1):
-                pygame.draw.rect(screen, (104, 70, 48), (dx, door_y, ts - 12, ts), border_radius=6)
-                pygame.draw.rect(screen, (74, 48, 34), (dx, door_y, ts - 12, ts), 2, border_radius=6)
+                pygame.draw.rect(screen, (104, 70, 48), (dx, door_y, ts - 12, int(ts * 1.2)), border_radius=6)
+                pygame.draw.rect(screen, (74, 48, 34), (dx, door_y, ts - 12, int(ts * 1.2)), 2, border_radius=6)
                 num = self._small_font().render(str(idx), True, (240, 230, 200))
-                screen.blit(num, (dx + (ts // 2) - 8, door_y - 14))
+                screen.blit(num, (dx + (ts // 2) - 8, door_y + 4))
 
             # Lounge rugs and tables.
             pygame.draw.rect(screen, (118, 64, 44), (2 * ts, 8 * ts, ts * 5, ts * 2), border_radius=10)
@@ -2709,7 +2832,6 @@ class InteriorRenderer:
                 pygame.draw.circle(screen, (240, 214, 130), (tx + 2, 9 * ts - 2), 5)
 
             # Left/right decorative beds in lobby corners for RPG vibe.
-            # Beds (left + right)
             bed_color = (210, 210, 235)
             quilt = (150, 80, 90)
             pillow = (235, 235, 245)
@@ -2740,6 +2862,12 @@ class InteriorRenderer:
             # Side table + candle
             pygame.draw.rect(screen, (126, 88, 60), (10 * ts, 5 * ts, ts + 8, ts), border_radius=5)
             pygame.draw.circle(screen, (255, 220, 120), (10 * ts + ts // 2, 5 * ts + ts // 2), 6)
+            # Fireplace + rug + wardrobe
+            pygame.draw.rect(screen, (92, 78, 72), (2 * ts - 10, 2 * ts + 6, ts + 20, ts * 2), border_radius=6)
+            pygame.draw.rect(screen, (230, 120, 60), (2 * ts + 8, 3 * ts - 2, ts - 16, ts - 12), border_radius=4)
+            pygame.draw.ellipse(screen, (66, 48, 40), (2 * ts + 6, 4 * ts - 6, ts - 12, 12))
+            pygame.draw.ellipse(screen, (210, 196, 172), (4 * ts - 4, 8 * ts - 6, ts * 5, ts * 2))
+            pygame.draw.rect(screen, (108, 82, 60), (self.mw * ts - 3 * ts, 4 * ts, ts + 18, ts * 3), border_radius=8)
             # Room exit door
             pygame.draw.rect(screen, (108, 74, 50), (self.mw // 2 * ts - 16, (self.mh - 1) * ts + 8, 32, ts - 14), border_radius=6)
 
@@ -2853,8 +2981,16 @@ class GameEngine:
                 if a == 0:
                     continue
                 # Hard chroma key removal.
-                if g > 175 and g > r + 70 and g > b + 70:
+                if g > 170 and g > r + 55 and g > b + 55:
                     px[x, y] = (0, 0, 0, 0)
+                    continue
+                # Remove green-ish matte even when it's not pure chroma green.
+                if g > 120 and g > r * 1.25 and g > b * 1.25 and (r < 120 or b < 120):
+                    na = max(0, a - 120)
+                    if na < 30:
+                        px[x, y] = (0, 0, 0, 0)
+                    else:
+                        px[x, y] = (r, int(g * 0.55), b, na)
                     continue
                 # Remove border-colored matte if it resembles keyed background.
                 if dom_color is not None and (x in [0, w - 1] or y in [0, h - 1]):
@@ -2865,7 +3001,7 @@ class GameEngine:
                         px[x, y] = (0, 0, 0, 0)
                         continue
                 # Defringe semitransparent green spill on edges.
-                if a < 255 and g > r + 40 and g > b + 40:
+                if a < 255 and g > r + 25 and g > b + 25:
                     nr = min(255, int(r * 1.08))
                     nb = min(255, int(b * 1.08))
                     ng = int(g * 0.55)
@@ -2910,7 +3046,15 @@ class GameEngine:
             surface = pygame.image.fromstring(img.tobytes(), img.size, "RGBA")
             scale = 1.0
             base_name = name.replace("_alt", "")
-            if base_name in ["player", "npc", "npc_healed"]:
+            if base_name.startswith("scene_"):
+                # Full-room backdrop image (shop/inn scenes).
+                map_w = self.config.MAP_WIDTH * ts
+                map_h = self.config.MAP_HEIGHT * ts
+                surf = pygame.transform.scale(surface, (map_w, map_h)).convert_alpha()
+                self.surfaces[name] = surf
+                self.sprite_offsets[name] = (0, 0)
+                continue
+            if base_name in ["player", "npc", "npc_healed", "npc_shop", "npc_inn", "npc_guest_a", "npc_guest_b"]:
                 scale = 1.75
             elif base_name in ["door"]:
                 scale = 1.5
@@ -2918,6 +3062,12 @@ class GameEngine:
                 scale = 1.3
             elif base_name in ["key"]:
                 scale = 1.1
+            elif base_name in ["building_shop", "building_inn"]:
+                scale = 2.5
+            elif base_name in ["shop_counter", "shop_shelf", "inn_desk"]:
+                scale = 1.8
+            elif base_name in ["inn_bed", "inn_room_door"]:
+                scale = 1.9
             size = max(1, int(ts * scale))
             surf = pygame.transform.scale(surface, (size, size)).convert_alpha()
             # Final hard fallback for any lingering pure-green matte.
@@ -3014,7 +3164,7 @@ class GameEngine:
                 "npc_sprite_key": "npc_inn",
                 "goods": inn_goods,
                 "bed_pos": (6, 5),
-                "room_door": (self.config.MAP_WIDTH // 2, 5),
+                "room_door": (self.config.MAP_WIDTH // 2, 1),
                 "room_exit": (self.config.MAP_WIDTH // 2, self.config.MAP_HEIGHT - 1),
                 "room_number": "3",
                 "guest_npcs": [(3, 8), (11, 8)],
@@ -3213,8 +3363,10 @@ class GameEngine:
         self.screen.blit(surf, (px + ox + ex, py + oy + ey))
 
     def _draw_building_exterior(self, center_x: int, center_y: int, theme: str, label: str):
-        """Draw a top-down RPG-style building exterior with clearer inn/shop identity."""
+        """Draw a consistent retro RPG-style building exterior."""
         ts = self.config.TILE_SIZE
+        # Use deterministic code-drawn exteriors for consistent look across all runs.
+        # Generated building sprites vary too much and can reintroduce matte artifacts.
         bw = int(ts * 2.7)
         bh = int(ts * 2.2)
         x0 = center_x - bw // 2
@@ -3270,6 +3422,53 @@ class GameEngine:
         pygame.draw.rect(self.screen, sign_bg, (x0 + 14, y0 + ts + 8, 50, 16), border_radius=4)
         txt = self.font.render(label, True, (238, 236, 226))
         self.screen.blit(txt, (x0 + 18, y0 + ts + 8))
+
+    def _indoor_scene_key(self):
+        if not self.current_building:
+            return None
+        theme = self.current_building.get("theme")
+        mode = getattr(self, "indoor_mode", "lobby")
+        if theme == "shop":
+            return "scene_shop_interior"
+        if theme == "inn" and mode == "lobby":
+            return "scene_inn_lobby"
+        if theme == "inn" and mode == "room":
+            return "scene_inn_room"
+        return None
+
+    def _draw_indoor_setpieces(self):
+        if self.scene != "indoor" or not self.current_building:
+            return
+        scene_backdrop_active = False
+        scene_key = self._indoor_scene_key()
+        if scene_key and scene_key in self.surfaces:
+            scene_backdrop_active = True
+        ts = self.config.TILE_SIZE
+        theme = self.current_building.get("theme")
+        mode = getattr(self, "indoor_mode", "lobby")
+        if theme == "shop":
+            if scene_backdrop_active:
+                return
+            shelf_spots = [(2, 2), (6, 2), (10, 2), (3, 4), (9, 4)]
+            for sx, sy in shelf_spots:
+                if "shop_shelf" in self.surfaces:
+                    self._blit_sprite("shop_shelf", sx, sy)
+            if "shop_counter" in self.surfaces:
+                self._blit_sprite("shop_counter", self.config.MAP_WIDTH // 2, 6)
+        elif theme == "inn":
+            if mode == "lobby":
+                if "inn_desk" in self.surfaces and not scene_backdrop_active:
+                    self._blit_sprite("inn_desk", self.config.MAP_WIDTH // 2, 2)
+                # Numbered room door attached to wall.
+                rdx, rdy = self.current_building.get("room_door", (self.config.MAP_WIDTH // 2, 1))
+                if "inn_room_door" in self.surfaces and not scene_backdrop_active:
+                    self._blit_sprite("inn_room_door", rdx, rdy)
+                plaque = self.font.render(f"R{self.current_building.get('room_number', '3')}", True, (240, 230, 200))
+                self.screen.blit(plaque, (rdx * ts + 18, rdy * ts + 4))
+            elif mode == "room":
+                bed = self.current_building.get("bed_pos", (6, 5))
+                if "inn_bed" in self.surfaces and not scene_backdrop_active:
+                    self._blit_sprite("inn_bed", bed[0], bed[1])
 
     def _anim_key(self, base: str, moving: bool = False):
         alt = f"{base}_alt"
@@ -3854,7 +4053,12 @@ class GameEngine:
         if self.scene == "outdoor":
             self.terrain.draw(self.screen, self.anim_time)
         else:
-            self.interior.draw(self.screen, self.anim_time)
+            scene_key = self._indoor_scene_key()
+            if scene_key and scene_key in self.surfaces:
+                self.screen.blit(self.surfaces[scene_key], (0, 0))
+            else:
+                self.interior.draw(self.screen, self.anim_time)
+            self._draw_indoor_setpieces()
 
         # Draw broken/repaired bridge (outdoor)
         if self.scene == "outdoor" and self.bridge_tiles:
@@ -4682,6 +4886,10 @@ def generate():
         base_player_sprite = None
         reuse_shop_npc = None
         reuse_inn_npc = None
+        reuse_guest_a = None
+        reuse_guest_b = None
+        reuse_building_shop = None
+        reuse_building_inn = None
 
         for i in range(level_count):
             level_prompt = (
@@ -4702,7 +4910,14 @@ def generate():
             
             print("\n[2/2] Generating sprites...")
             # Reuse some sprites across levels to reduce image calls.
-            game["_reuse_sprites"] = {"npc_shop": reuse_shop_npc, "npc_inn": reuse_inn_npc}
+            game["_reuse_sprites"] = {
+                "npc_shop": reuse_shop_npc,
+                "npc_inn": reuse_inn_npc,
+                "npc_guest_a": reuse_guest_a,
+                "npc_guest_b": reuse_guest_b,
+                "building_shop": reuse_building_shop,
+                "building_inn": reuse_building_inn,
+            }
             sprites = SpriteGenerator(client, config.API_DELAY).generate_all(game, reuse_player_sprite=base_player_sprite)
             if base_player_sprite is None:
                 base_player_sprite = sprites.get("player")
@@ -4710,6 +4925,14 @@ def generate():
                 reuse_shop_npc = sprites.get("npc_shop")
             if reuse_inn_npc is None:
                 reuse_inn_npc = sprites.get("npc_inn")
+            if reuse_guest_a is None:
+                reuse_guest_a = sprites.get("npc_guest_a")
+            if reuse_guest_b is None:
+                reuse_guest_b = sprites.get("npc_guest_b")
+            if reuse_building_shop is None:
+                reuse_building_shop = sprites.get("building_shop")
+            if reuse_building_inn is None:
+                reuse_building_inn = sprites.get("building_inn")
             levels.append({"game": game, "sprites": sprites})
         
         pending_game = {"ready": True, "levels": levels}
@@ -4766,6 +4989,15 @@ def main():
             ("item_generic", "item", "simple collectible item icon: small pouch or trinket with clear silhouette"),
             ("bridge_broken", "item", "top-down broken wooden bridge segment over water, snapped planks, visible central gap, small debris"),
             ("bridge_fixed", "item", "top-down repaired wooden bridge segment over water, clean plank deck and rope rails"),
+            ("npc_guest_a", "npc", "ONE full-body inn guest sprite, top-down RPG pixel style, unique outfit and silhouette, transparent background, no frame"),
+            ("npc_guest_b", "npc", "ONE full-body inn guest sprite, top-down RPG pixel style, different hair/clothes from guest A, transparent background, no frame"),
+            ("building_shop", "item", "pixel-art top-down RPG shop building exterior with red roof, centered door, windows"),
+            ("building_inn", "item", "pixel-art top-down RPG inn building exterior, warm roof, large entrance, welcoming sign"),
+            ("shop_counter", "item", "top-down pixel RPG shop counter, polished wood, books and potion bottles, transparent background"),
+            ("shop_shelf", "item", "top-down pixel RPG wall shelf full of colorful bottles and goods, transparent background"),
+            ("inn_desk", "item", "top-down pixel RPG inn reception desk with bell and ledger, transparent background"),
+            ("inn_bed", "item", "top-down pixel RPG inn bedroom bed with blanket and pillow, transparent background"),
+            ("inn_room_door", "item", "top-down pixel RPG wooden room door with number plaque and handle, transparent background"),
         ]
 
         print(f"Baking core sprites to {BAKED_SPRITES_DIR} (quality={Config.IMAGE_QUALITY})...")
