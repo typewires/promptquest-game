@@ -222,16 +222,15 @@ Three valid workflows:
 Example prompt with explicit per-level controls:
 
 ```text
-A lantern-lit kingdom road with detailed 32-bit characters.
+A lantern-lit fantasy world with high-detail character portraits.
 Time: night
 Level 1 Biome: snow
 Level 2 Biome: ruins
 Level 3 Biome: beach
-Level 1: cure
-Level 2: lost_item
-Level 3: key_and_door
-Hero look: red scarf alchemist with dark blue coat and satchel.
-NPC look: princess in pale gown, then healed and glowing.
+Level 1 NPC looks like: a sick princess in pale gown; goal is cure
+Level 2 NPC looks like: an old archivist in cracked stone robes; goal is lost_item
+Level 3 NPC looks like: a gate warden in blue steel cloak; goal is key_and_door
+Hero look: red scarf alchemist, dark blue coat, satchel.
 ```
 
 How precedence works:
@@ -239,6 +238,7 @@ How precedence works:
 - If only UI sets it, UI is used.
 - If neither prompt nor UI sets it, the generator randomizes from valid options.
 - If you set only `Level 1 Biome` but generate 3 levels, Level 2 and Level 3 biomes/goals are auto-generated unless explicitly set.
+- Global `Time: ...`, `Hero look: ...`, and `NPC look: ...` are treated as Level 1 defaults. Levels 2/3 randomize those unless you provide per-level directives (for example `Level 2 Time: dawn` or `Level 2 NPC looks like ...`).
 
 Example:
 - UI Level 2 biome = `forest`, but prompt says `Level 2 Biome: snow` → Level 2 uses `snow`.
@@ -258,11 +258,10 @@ Time: night
 Level 1 Biome: snow
 Level 2 Biome: ruins
 Level 3 Biome: beach
-Level 1: cure
-Level 2: lost_item
-Level 3: key_and_door
+Level 1 NPC looks like: sick princess in pale gown, healed version brighter. goal is cure
+Level 2 NPC looks like: hooded relic hunter with bronze lantern. goal is lost_item
+Level 3 NPC looks like: disciplined gate captain in silver cloak. goal is key_and_door
 Hero look: red scarf alchemist, dark blue coat, satchel.
-NPC look: sick princess in pale gown, healed version should look brighter.
 ```
 
 ## Cost / Quality Settings

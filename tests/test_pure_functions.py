@@ -222,6 +222,11 @@ class TestParseLevelGoalOverrides:
         result = gg.parse_level_goal_overrides("level 1: repair_bridge")
         assert result == {1: ["repair_bridge"]}
 
+    def test_narrative_line_with_goal_is(self):
+        prompt = "Level 2 NPC looks like: old archivist. goal is lost_item"
+        result = gg.parse_level_goal_overrides(prompt)
+        assert result == {2: ["lost_item"]}
+
 
 # ── parse_level_biome_overrides / build_biome_plans ─────────
 
@@ -267,6 +272,21 @@ class TestBuildBiomePlans:
         )
         assert len(plans) == 3
         assert all(p in gg.ALLOWED_BIOMES for p in plans)
+
+
+class TestBuildTimePlans:
+    def test_level1_uses_global_time_hint(self):
+        plans = gg.build_time_plans("Time: night", level_count=3, ui_time=None)
+        assert plans[0] == "night"
+
+    def test_level2_level3_random_when_unspecified(self):
+        plans = gg.build_time_plans("Time: night", level_count=3, ui_time=None)
+        assert len(plans) == 3
+        assert all(t in gg.ALLOWED_TIMES for t in plans)
+
+    def test_level_time_override_wins(self):
+        plans = gg.build_time_plans("Time: day\nLevel 2 Time: dawn", level_count=3, ui_time=None)
+        assert plans[1] == "dawn"
 
 
 # ── build_quest_plans ────────────────────────────────────────

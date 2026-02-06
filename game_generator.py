@@ -61,6 +61,7 @@ class Config:
 
 ALLOWED_GOALS = ["cure", "key_and_door", "lost_item", "repair_bridge"]
 ALLOWED_BIOMES = ["meadow", "forest", "town", "beach", "snow", "desert", "ruins", "castle"]
+ALLOWED_TIMES = ["day", "dawn", "sunset", "night"]
 
 BAKED_SPRITES_DIR = os.path.join("assets", "sprites")
 BAKED_MANIFEST_PATH = os.path.join(BAKED_SPRITES_DIR, "manifest.json")
@@ -110,8 +111,9 @@ def parse_level_goal_overrides(prompt: str) -> dict[int, list[str]]:
     out: dict[int, list[str]] = {}
     p = str(prompt)
 
-    # Match: "level 1: cure, lost_item" or "level2 - key_and_door"
-    # We capture the remainder and then extract allowed goal tokens in order.
+    goal_token_re = re.compile(r"(?i)\b(cure|key_and_door|lost_item|repair_bridge)\b")
+
+    # Primary match: "level 1: cure, lost_item" / "level2 - key_and_door"
     pat = re.compile(r"(?im)\blevel\s*([1-3])\s*[:\-]\s*(.+)$")
     for m in pat.finditer(p):
         try:
@@ -119,13 +121,31 @@ def parse_level_goal_overrides(prompt: str) -> dict[int, list[str]]:
         except Exception:
             continue
         remainder = str(m.group(2) or "")
-        found = re.findall(r"(?i)\b(cure|key_and_door|lost_item|repair_bridge)\b", remainder)
+        found = goal_token_re.findall(remainder)
         opts: list[str] = []
         for raw in found:
             gt = normalize_goal_type(raw)
             if gt and gt not in opts:
                 opts.append(gt)
         if idx and opts:
+            out[idx] = opts
+
+    # Secondary match for narrative lines like:
+    # "Level 2 NPC looks like ..., goal is lost_item"
+    for line in p.splitlines():
+        lm = re.search(r"(?i)\blevel\s*([1-3])\b", line)
+        if not lm:
+            continue
+        idx = int(lm.group(1))
+        found = goal_token_re.findall(line)
+        if not found:
+            continue
+        opts: list[str] = []
+        for raw in found:
+            gt = normalize_goal_type(raw)
+            if gt and gt not in opts:
+                opts.append(gt)
+        if idx and opts and idx not in out:
             out[idx] = opts
     return out
 
@@ -175,6 +195,69 @@ def parse_level_biome_overrides(prompt: str) -> dict[int, str]:
         if b:
             out[idx] = b
     return out
+
+
+def normalize_time_of_day(value: str | None) -> str | None:
+    """Return canonical time of day or None."""
+    if not value:
+        return None
+    v = str(value).strip().lower()
+    aliases = {"dusk": "sunset", "twilight": "sunset", "sunrise": "dawn", "morning": "day", "afternoon": "day", "noon": "day"}
+    v = aliases.get(v, v)
+    return v if v in ALLOWED_TIMES else None
+
+
+def parse_level_time_overrides(prompt: str) -> dict[int, str]:
+    """
+    Parse prompt directives like:
+      "Level 2 Time: night"
+      "level3 time - dawn"
+    Returns {2: "night", 3: "dawn"}.
+    """
+    if not prompt:
+        return {}
+    out: dict[int, str] = {}
+    lines = str(prompt).splitlines()
+    pat = re.compile(r"(?i)\blevel\s*([1-3])\s*time\s*[:\-]\s*([a-z_]+)\b")
+    for line in lines:
+        m = pat.search(line)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        t = normalize_time_of_day(m.group(2))
+        if t:
+            out[idx] = t
+    return out
+
+
+def strip_first_level_only_directives(prompt: str) -> str:
+    """
+    Remove global/Level-1-specific styling lines so follow-up levels can randomize those parts.
+    Keeps level 2/3 explicit directives intact.
+    """
+    if not prompt:
+        return ""
+    out: list[str] = []
+    for line in str(prompt).splitlines():
+        s = line.strip()
+        if not s:
+            out.append(line)
+            continue
+        l = s.lower()
+        if l.startswith("hero look:"):
+            continue
+        if l.startswith("npc look:"):
+            continue
+        if re.match(r"(?i)^time\s*:", s):
+            continue
+        if re.match(r"(?i)^level\s*1\s*:", s):
+            continue
+        if re.match(r"(?i)^level\s*1\s*biome\s*:", s):
+            continue
+        if re.match(r"(?i)^level\s*1\s*time\s*:", s):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 def normalize_goal_type(value: str | None) -> str | None:
@@ -277,6 +360,28 @@ def build_biome_plans(prompt: str, by_level_raw: list, level_count: int) -> list
         plans.append(b)
         if b not in used:
             used.append(b)
+    return plans
+
+
+def build_time_plans(prompt: str, level_count: int, ui_time: str | None = None) -> list[str]:
+    """
+    Build per-level time-of-day values.
+    - Level 1: prompt/UI hint can apply.
+    - Levels 2/3: random unless explicitly overridden by `Level N Time: ...`.
+    """
+    level_count = max(1, min(3, int(level_count)))
+    overrides = parse_level_time_overrides(prompt)
+    hint_time = normalize_time_of_day((extract_env_hints(prompt) or {}).get("time_of_day")) or normalize_time_of_day(ui_time)
+
+    plans: list[str] = []
+    for lvl in range(1, level_count + 1):
+        if overrides.get(lvl):
+            plans.append(overrides[lvl])
+            continue
+        if lvl == 1 and hint_time:
+            plans.append(hint_time)
+            continue
+        plans.append(random.choice(ALLOWED_TIMES))
     return plans
 
 
@@ -3589,7 +3694,7 @@ HTML = '''
                     <option value="sunset">Sunset</option>
                     <option value="night">Night</option>
                 </select>
-                <span style="color:#888; font-size:12px;">(optional)</span>
+                <span style="color:#888; font-size:12px;">(optional, applies to Level 1 unless Level N Time is set)</span>
             </div>
             <button class="rand-btn" onclick="randomPrompt()">🎲 Generate Random Prompt</button>
             <div class="levels">
@@ -3727,6 +3832,7 @@ HTML = '''
             • Your prompt sets the world theme (biome/time/vibe) and character style, and can also set exact per-level controls.<br>
             • You can assign biome per level in prompt (<code>Level 1 Biome: snow</code>) or in UI (<code>Level 1 biome</code>, <code>Level 2 biome</code>, <code>Level 3 biome</code> dropdowns).<br>
             • You can assign goals per level in prompt (<code>Level 2: repair_bridge</code>) or in UI checkboxes under each level.<br>
+            • Prompt <code>Time:</code>, <code>Hero look:</code>, and <code>NPC look:</code> apply to Level 1 by default. Levels 2/3 randomize those unless you set <code>Level N Time:</code>.<br>
             • If prompt and UI both set the same level value, prompt wins for that level.<br>
             • If a level is unspecified in both prompt and UI, that level biome/goals are auto-generated.<br>
             • If you check multiple goals for one level, they are stacked and all must be completed.<br>
@@ -3881,6 +3987,7 @@ HTML = '''
                         levels: levels,
                         goalByLevel: goalByLevel,
                         biomeByLevel: biomeByLevel,
+                        timeOfDay: tod,
                         quality: quality
                     })
                 });
@@ -3939,8 +4046,11 @@ def generate():
         prompt = data.get("prompt", "")
         by_level_raw = data.get("goalByLevel") or []
         biome_by_level_raw = data.get("biomeByLevel") or []
+        ui_time = normalize_time_of_day(data.get("timeOfDay") or "")
         quest_plans = build_quest_plans(prompt=prompt, by_level_raw=by_level_raw, level_count=level_count)
         biome_plans = build_biome_plans(prompt=prompt, by_level_raw=biome_by_level_raw, level_count=level_count)
+        time_plans = build_time_plans(prompt=prompt, level_count=level_count, ui_time=ui_time)
+        followup_prompt_base = strip_first_level_only_directives(prompt)
 
         base_player = None
         base_player_sprite = None
@@ -3951,10 +4061,10 @@ def generate():
             level_prompt = (
                 data["prompt"]
                 if i == 0
-                else f"{data['prompt']} -- New area {i+1} with different terrain, new NPC, and new objectives."
+                else f"{followup_prompt_base} -- New area {i+1} with different terrain, new NPC, and new objectives."
             )
             # Force/seed level biome from prompt or UI plan, with random fallback already resolved.
-            level_prompt = f"{level_prompt} Level {i+1} Biome: {biome_plans[i]}."
+            level_prompt = f"{level_prompt} Level {i+1} Biome: {biome_plans[i]}. Level {i+1} Time: {time_plans[i]}."
             game = designer.design_game(level_prompt, quest_plan_override=quest_plans[i])
             if base_player is None:
                 base_player = game["player"]
