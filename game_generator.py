@@ -1992,32 +1992,39 @@ class TerrainRenderer:
 
     def _make_grass_tile(self, base: tuple[int, int, int], dark: tuple[int, int, int], light: tuple[int, int, int]) -> pygame.Surface:
         ts = self.ts
-        surf = self._make_textured_tile(base, dark, light, edge_dark=10, edge_light=8)
-        # Add tiny blade clusters so grass reads continuous like classic RPG maps.
+        surf = self._make_textured_tile(base, dark, light, edge_dark=6, edge_light=8)
+        # Pixel micro-tiles to mimic classic RPG grass atlas feel.
+        cell = max(4, ts // 12)
         rng = random.Random((self.seed * 57 + ts * 3) & 0xFFFFFFFF)
-        for _ in range(max(12, ts // 3)):
-            x = rng.randint(2, ts - 3)
-            y = rng.randint(3, ts - 3)
-            c = self._shift(base, rng.randint(6, 20))
-            pygame.draw.line(surf, c, (x, y), (x, y - 2), 1)
-            if rng.random() < 0.5:
-                pygame.draw.line(surf, c, (x + 1, y), (x + 1, y - 1), 1)
+        for gy in range(0, ts, cell):
+            for gx in range(0, ts, cell):
+                jitter = rng.randint(-6, 8)
+                c = self._shift(base, jitter)
+                pygame.draw.rect(surf, c, (gx, gy, cell, cell))
+                # Tiny blade marks.
+                if rng.random() < 0.75:
+                    bx = min(ts - 2, gx + rng.randint(1, max(1, cell - 2)))
+                    by = min(ts - 2, gy + rng.randint(1, max(1, cell - 1)))
+                    pygame.draw.line(surf, self._shift(c, 16), (bx, by), (bx, max(0, by - 2)), 1)
         return surf
 
     def _make_path_tile(self, base: tuple[int, int, int]) -> pygame.Surface:
         ts = self.ts
-        light = self._shift(base, 14)
-        dark = self._shift(base, -18)
-        surf = self._make_textured_tile(base, dark, light, edge_dark=8, edge_light=10)
-        # Brick-like chunks for pokemon-style road continuity.
-        step = max(8, ts // 5)
-        for y in range(2, ts - 2, step):
-            offset = 0 if ((y // step) % 2 == 0) else step // 2
-            for x in range(2 + offset, ts - 4, step):
-                w = min(step - 2, ts - x - 2)
-                h = max(3, step // 3)
-                pygame.draw.rect(surf, self._shift(base, 8), (x, y, w, h), border_radius=2)
-                pygame.draw.rect(surf, self._shift(base, -14), (x, y, w, h), 1, border_radius=2)
+        light = self._shift(base, 12)
+        dark = self._shift(base, -16)
+        surf = self._make_textured_tile(base, dark, light, edge_dark=5, edge_light=8)
+        # Brick pattern similar to retro town roads.
+        row_h = max(6, ts // 8)
+        brick_w = max(10, ts // 4)
+        for y in range(2, ts - 2, row_h):
+            offset = 0 if ((y // row_h) % 2 == 0) else brick_w // 2
+            for x in range(2 + offset, ts - 2, brick_w):
+                w = min(brick_w - 2, ts - x - 2)
+                h = max(3, row_h - 1)
+                if w <= 2:
+                    continue
+                pygame.draw.rect(surf, self._shift(base, 10), (x, y, w, h))
+                pygame.draw.line(surf, self._shift(base, -14), (x, y + h - 1), (x + w, y + h - 1), 1)
         return surf
 
     def _make_water_tile(self) -> pygame.Surface:
@@ -2031,12 +2038,41 @@ class TerrainRenderer:
             c = self._mix_color(light, deep, g)
             pygame.draw.line(surf, c, (0, y), (ts, y))
         trng = random.Random((self.seed * 131 + ts * 17) & 0xFFFFFFFF)
-        for _ in range(max(10, ts // 5)):
+        # Horizontal ripple streaks.
+        for _ in range(max(10, ts // 4)):
             y = trng.randint(2, ts - 3)
             x0 = trng.randint(0, ts // 2)
             x1 = min(ts - 1, x0 + trng.randint(ts // 5, ts // 2))
-            pygame.draw.line(surf, (*light, trng.randint(60, 110)), (x0, y), (x1, y), 1)
+            pygame.draw.line(surf, self._shift(light, 8), (x0, y), (x1, y), 1)
+        # Speckle highlights (retro water sparkle).
+        for _ in range(max(6, ts // 10)):
+            x = trng.randint(1, ts - 2)
+            y = trng.randint(1, ts - 2)
+            surf.set_at((x, y), (*self._shift(light, 16), 180))
         return surf
+
+    def _neighbor_mask(self, tiles: set[tuple[int, int]], x: int, y: int) -> int:
+        m = 0
+        if (x, y - 1) in tiles:
+            m |= 1  # N
+        if (x + 1, y) in tiles:
+            m |= 2  # E
+        if (x, y + 1) in tiles:
+            m |= 4  # S
+        if (x - 1, y) in tiles:
+            m |= 8  # W
+        return m
+
+    def _draw_edge_strip(self, screen, color: tuple[int, int, int], x: int, y: int, edge: str, w: int):
+        ts = self.ts
+        if edge == "N":
+            pygame.draw.rect(screen, color, (x, y, ts, w))
+        elif edge == "E":
+            pygame.draw.rect(screen, color, (x + ts - w, y, w, ts))
+        elif edge == "S":
+            pygame.draw.rect(screen, color, (x, y + ts - w, ts, w))
+        elif edge == "W":
+            pygame.draw.rect(screen, color, (x, y, w, ts))
 
     def _build_visual_tiles(self):
         # Biome specific base tile families to keep each map distinct.
@@ -2491,46 +2527,80 @@ class TerrainRenderer:
         path_tile = self.visual_tile_cache.get("path")
         water_tile = self.visual_tile_cache.get("water")
 
-        # Draw base tiles (top-down textured ground/path/water)
+        # Pass 1: ground base.
         for y in range(self.mh):
             for x in range(self.mw):
                 px, py = x * ts, y * ts
-                if (x, y) in self.water_tiles:
-                    if water_tile is not None:
-                        screen.blit(water_tile, (px, py))
-                    # Animated ripple lines over water tile.
-                    wave = int((t * 14 + (x * 2 + y * 4)) % ts)
-                    pygame.draw.line(
-                        screen,
-                        self.palette["water_light"],
-                        (px + 4, py + wave),
-                        (px + ts - 4, py + wave),
-                        2,
-                    )
-                elif (x, y) in self.path_tiles:
-                    if path_tile is not None:
-                        screen.blit(path_tile, (px, py))
-                    # Round path corners for smoother top-down roads.
-                    pygame.draw.circle(screen, self.palette["path"], (px + ts // 2, py + ts // 2), ts // 3)
-                else:
-                    if ground_tile is not None:
-                        screen.blit(ground_tile, (px, py))
+                if ground_tile is not None:
+                    screen.blit(ground_tile, (px, py))
 
-                # Shore highlight where land touches water.
-                if (x, y) not in self.water_tiles:
-                    near_water = (
-                        (x + 1, y) in self.water_tiles
-                        or (x - 1, y) in self.water_tiles
-                        or (x, y + 1) in self.water_tiles
-                        or (x, y - 1) in self.water_tiles
-                    )
-                    if near_water:
-                        pygame.draw.rect(
-                            screen,
-                            self._shift(self.palette["water_light"], 20),
-                            (px + 2, py + 2, ts - 4, ts - 4),
-                            1,
-                        )
+        # Pass 2: water tiles with connected border logic.
+        shore_light = self._shift(self.palette["water_light"], 16)
+        shore_dark = self._shift(self.palette["water"], -24)
+        edge_w = max(2, ts // 10)
+        for (x, y) in self.water_tiles:
+            px, py = x * ts, y * ts
+            if water_tile is not None:
+                screen.blit(water_tile, (px, py))
+            wave = int((t * 14 + (x * 2 + y * 4)) % ts)
+            pygame.draw.line(
+                screen,
+                self.palette["water_light"],
+                (px + 4, py + wave),
+                (px + ts - 4, py + wave),
+                2,
+            )
+            mask = self._neighbor_mask(self.water_tiles, x, y)
+            if not (mask & 1):
+                self._draw_edge_strip(screen, shore_dark, px, py, "N", edge_w)
+            if not (mask & 2):
+                self._draw_edge_strip(screen, shore_dark, px, py, "E", edge_w)
+            if not (mask & 4):
+                self._draw_edge_strip(screen, shore_dark, px, py, "S", edge_w)
+            if not (mask & 8):
+                self._draw_edge_strip(screen, shore_dark, px, py, "W", edge_w)
+
+        # Pass 3: path with neighbor-aware connectors.
+        path_edge_dark = self._shift(self.palette["path"], -24)
+        path_edge_light = self._shift(self.palette["path"], 14)
+        conn_w = max(3, ts // 8)
+        for (x, y) in self.path_tiles:
+            px, py = x * ts, y * ts
+            if path_tile is not None:
+                screen.blit(path_tile, (px, py))
+            mask = self._neighbor_mask(self.path_tiles, x, y)
+            # Open edges get a darker trim; connected edges get slight bright center extension.
+            if not (mask & 1):
+                self._draw_edge_strip(screen, path_edge_dark, px, py, "N", conn_w)
+            else:
+                pygame.draw.rect(screen, path_edge_light, (px + ts // 4, py, ts // 2, conn_w))
+            if not (mask & 2):
+                self._draw_edge_strip(screen, path_edge_dark, px, py, "E", conn_w)
+            else:
+                pygame.draw.rect(screen, path_edge_light, (px + ts - conn_w, py + ts // 4, conn_w, ts // 2))
+            if not (mask & 4):
+                self._draw_edge_strip(screen, path_edge_dark, px, py, "S", conn_w)
+            else:
+                pygame.draw.rect(screen, path_edge_light, (px + ts // 4, py + ts - conn_w, ts // 2, conn_w))
+            if not (mask & 8):
+                self._draw_edge_strip(screen, path_edge_dark, px, py, "W", conn_w)
+            else:
+                pygame.draw.rect(screen, path_edge_light, (px, py + ts // 4, conn_w, ts // 2))
+
+        # Pass 4: shoreline highlights on adjacent land tiles.
+        for y in range(self.mh):
+            for x in range(self.mw):
+                if (x, y) in self.water_tiles:
+                    continue
+                px, py = x * ts, y * ts
+                if (x, y - 1) in self.water_tiles:
+                    self._draw_edge_strip(screen, shore_light, px, py, "N", 2)
+                if (x + 1, y) in self.water_tiles:
+                    self._draw_edge_strip(screen, shore_light, px, py, "E", 2)
+                if (x, y + 1) in self.water_tiles:
+                    self._draw_edge_strip(screen, shore_light, px, py, "S", 2)
+                if (x - 1, y) in self.water_tiles:
+                    self._draw_edge_strip(screen, shore_light, px, py, "W", 2)
 
         # Apply a single continuous texture layer so tiles read as connected terrain.
         if getattr(self, "ground_overlay", None) is not None:
@@ -2801,7 +2871,20 @@ class GameEngine:
                     ng = int(g * 0.55)
                     na = max(0, min(255, a - 70))
                     px[x, y] = (nr, ng, nb, na)
-        return img
+        # Add slight dark outline around opaque body to unify style.
+        out = img.copy()
+        opx = out.load()
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
+                if px[x, y][3] == 0:
+                    # transparent pixel near opaque body -> outline pixel
+                    neighbors = [
+                        px[x - 1, y], px[x + 1, y], px[x, y - 1], px[x, y + 1],
+                        px[x - 1, y - 1], px[x + 1, y - 1], px[x - 1, y + 1], px[x + 1, y + 1],
+                    ]
+                    if any(n[3] > 180 for n in neighbors):
+                        opx[x, y] = (16, 20, 26, 140)
+        return out
 
     def load_level(self, index: int):
         self.level_index = index
