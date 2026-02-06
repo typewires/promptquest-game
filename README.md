@@ -54,6 +54,26 @@ python game_generator.py
 
 Then return to the terminal and press **ENTER** to start playing.
 
+## Per-Level Biome Control (UI + Prompt)
+You can control biomes in either place:
+
+- UI method:
+  - In the generator page, each level card has its own `Level N biome` dropdown.
+  - Example: set `Level 1 biome = snow`, `Level 2 biome = ruins`, `Level 3 biome = beach`.
+
+- Prompt method:
+  - Add directives like:
+    - `Level 1 Biome: snow`
+    - `Level 2 Biome: ruins`
+    - `Level 3 Biome: beach`
+
+- Priority rule:
+  - Prompt biome directive overrides the UI biome for the same level.
+  - If no biome is set in prompt or UI for a level, that level biome is auto-generated randomly from supported biomes.
+
+- Under-specified runs:
+  - If you generate 3 levels but only specify Level 1 biome, Level 2 and Level 3 biomes are auto-generated.
+
 ## How It Works (Simple)
 Each level is produced in three layers:
 
