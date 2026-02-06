@@ -3552,6 +3552,11 @@ HTML = '''
         <div class="card">
             <label>✨ Describe Your World</label>
             <textarea id="prompt" placeholder="A peaceful forest village with a friendly wizard and hidden treasures..."></textarea>
+            <div style="color:#93a4c0; font-size:12px; margin-top:8px; line-height:1.5">
+                You can be high-level or detailed in the prompt.<br>
+                High-level example: <code>a snowy kingdom at night</code>.<br>
+                Detailed example: <code>Level 1 Biome: snow</code>, <code>Level 2: lost_item</code>, <code>Time: night</code>, hero and NPC look/style notes.
+            </div>
             <div class="examples">
                 <button class="ex-btn" onclick="setEx('A sunny beach with seashells to collect and a friendly crab')">🏖️ Beach</button>
                 <button class="ex-btn" onclick="setEx('A magical forest at dawn with glowing mushrooms and fairy dust')">🌲 Forest</button>
@@ -3572,56 +3577,6 @@ HTML = '''
                     <option value="castle">Castle</option>
                 </select>
                 <span style="color:#888; font-size:12px;">(optional)</span>
-            </div>
-            <div class="levels" style="margin-top:6px; display:block">
-                <label style="margin:0; color:#22d3ee;">Biomes (per level, optional)</label>
-                <div style="color:#888; font-size:12px; margin-top:6px">
-                    Set biome per level in UI or use prompt directives (e.g. <code>Level 2 Biome: snow</code>). If a level is left unspecified in both UI and prompt, that level biome is auto-generated.
-                </div>
-                <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap">
-                    <div style="display:flex; align-items:center; gap:8px">
-                        <span style="width:56px; color:#cbd5e1; font-size:13px">Level 1</span>
-                        <select id="biomeL1" style="width:160px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
-                            <option value="">Auto</option>
-                            <option value="meadow">Meadow</option>
-                            <option value="forest">Forest</option>
-                            <option value="town">Town</option>
-                            <option value="beach">Beach</option>
-                            <option value="snow">Snow</option>
-                            <option value="desert">Desert</option>
-                            <option value="ruins">Ruins</option>
-                            <option value="castle">Castle</option>
-                        </select>
-                    </div>
-                    <div id="biomeL2Wrap" style="display:flex; align-items:center; gap:8px">
-                        <span style="width:56px; color:#cbd5e1; font-size:13px">Level 2</span>
-                        <select id="biomeL2" style="width:160px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
-                            <option value="">Auto</option>
-                            <option value="meadow">Meadow</option>
-                            <option value="forest">Forest</option>
-                            <option value="town">Town</option>
-                            <option value="beach">Beach</option>
-                            <option value="snow">Snow</option>
-                            <option value="desert">Desert</option>
-                            <option value="ruins">Ruins</option>
-                            <option value="castle">Castle</option>
-                        </select>
-                    </div>
-                    <div id="biomeL3Wrap" style="display:flex; align-items:center; gap:8px">
-                        <span style="width:56px; color:#cbd5e1; font-size:13px">Level 3</span>
-                        <select id="biomeL3" style="width:160px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
-                            <option value="">Auto</option>
-                            <option value="meadow">Meadow</option>
-                            <option value="forest">Forest</option>
-                            <option value="town">Town</option>
-                            <option value="beach">Beach</option>
-                            <option value="snow">Snow</option>
-                            <option value="desert">Desert</option>
-                            <option value="ruins">Ruins</option>
-                            <option value="castle">Castle</option>
-                        </select>
-                    </div>
-                </div>
             </div>
             <div class="levels">
                 <label style="margin:0; color:#22d3ee;">Time of Day</label>
@@ -3662,6 +3617,20 @@ HTML = '''
                 <div id="goalLevels" style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap">
                     <div class="card" style="padding:12px; margin:0; width: 100%">
                         <div style="font-weight:800; color:#cbd5e1; margin-bottom:8px">Level 1 goals</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+                            <span style="color:#94a3b8; font-size:12px; min-width:96px">Level 1 biome</span>
+                            <select id="biomeL1" style="width:180px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                                <option value="">Auto</option>
+                                <option value="meadow">Meadow</option>
+                                <option value="forest">Forest</option>
+                                <option value="town">Town</option>
+                                <option value="beach">Beach</option>
+                                <option value="snow">Snow</option>
+                                <option value="desert">Desert</option>
+                                <option value="ruins">Ruins</option>
+                                <option value="castle">Castle</option>
+                            </select>
+                        </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap">
                             <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
                                 <input type="checkbox" class="goalOptL1" value="cure"> Cure
@@ -3680,6 +3649,20 @@ HTML = '''
 
                     <div id="goalL2" class="card" style="padding:12px; margin:0; width: 100%">
                         <div style="font-weight:800; color:#cbd5e1; margin-bottom:8px">Level 2 goals</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+                            <span style="color:#94a3b8; font-size:12px; min-width:96px">Level 2 biome</span>
+                            <select id="biomeL2" style="width:180px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                                <option value="">Auto</option>
+                                <option value="meadow">Meadow</option>
+                                <option value="forest">Forest</option>
+                                <option value="town">Town</option>
+                                <option value="beach">Beach</option>
+                                <option value="snow">Snow</option>
+                                <option value="desert">Desert</option>
+                                <option value="ruins">Ruins</option>
+                                <option value="castle">Castle</option>
+                            </select>
+                        </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap">
                             <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
                                 <input type="checkbox" class="goalOptL2" value="cure"> Cure
@@ -3698,6 +3681,20 @@ HTML = '''
 
                     <div id="goalL3" class="card" style="padding:12px; margin:0; width: 100%">
                         <div style="font-weight:800; color:#cbd5e1; margin-bottom:8px">Level 3 goals</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+                            <span style="color:#94a3b8; font-size:12px; min-width:96px">Level 3 biome</span>
+                            <select id="biomeL3" style="width:180px; padding:8px; border-radius:8px; background:#0f0f23; color:white; border:2px solid #333">
+                                <option value="">Auto</option>
+                                <option value="meadow">Meadow</option>
+                                <option value="forest">Forest</option>
+                                <option value="town">Town</option>
+                                <option value="beach">Beach</option>
+                                <option value="snow">Snow</option>
+                                <option value="desert">Desert</option>
+                                <option value="ruins">Ruins</option>
+                                <option value="castle">Castle</option>
+                            </select>
+                        </div>
                         <div style="display:flex; gap:10px; flex-wrap:wrap">
                             <label style="display:flex; align-items:center; gap:6px; color:#cbd5e1; font-size:13px">
                                 <input type="checkbox" class="goalOptL3" value="cure"> Cure
@@ -3722,18 +3719,14 @@ HTML = '''
         
         <div class="card features">
             <b>✨ How Generation Works:</b><br>
-            • You can configure in UI or prompt: biome (per level), time of day, level count, quality, and per-level goals<br>
-            • Prompt directives are supported, for example: <code>Level 2 Biome: snow</code>, <code>Level 1: cure, lost_item</code>, <code>Time: night</code><br>
-            • Rules: prompt overrides UI for the same level/setting. If neither prompt nor UI specifies a value, the generator randomizes from valid options<br>
-            • This applies to goals and per-level biomes directly, and to map/time style when not explicitly set<br>
-            • Example: if you set <code>Level 1 Biome</code> but generate 3 levels, Level 2/3 goals and biomes are auto-generated unless you also specify them<br>
-            • Your prompt can also describe character look/style (hero and NPC appearance), scene vibe, and story flavor<br>
-            • Your prompt drives the setting (biome, time of day, vibe) and biases the map layout + decor<br>
-            • Each level can stack multiple goal types (cure, key+door, lost item, repair bridge). You must complete all selected goals for that level.<br>
-            • Pick goals in the UI, or write directives like <code>Level 2: repair_bridge</code> in your prompt<br>
-            • Prompt goal directives override UI selections for that same level<br>
-            • If you check multiple goals under a level, those goals are stacked together for that level<br>
-            • Generate Random Prompt only samples from supported biomes/times/layouts/goals so it always stays valid<br>
+            • Option A (simple): write only a theme prompt. The generator will create biomes/goals/details for each level automatically.<br>
+            • Option B (manual UI): pick level count, per-level biome, and per-level goals in dropdowns/checkboxes.<br>
+            • Option C (prompt directives): set exact values in text, e.g. <code>Level 2 Biome: snow</code>, <code>Level 1: cure, lost_item</code>, <code>Time: night</code>.<br>
+            • Precedence: prompt directives override UI for the same level/setting. If neither prompt nor UI sets it, it is auto-generated.<br>
+            • If you choose 3 levels but only specify Level 1 values, Level 2 and Level 3 are generated automatically.<br>
+            • You can also describe character look/style in the prompt (hero and NPC appearance).<br>
+            • If you check multiple goals for one level, those goals are stacked and all must be completed.<br>
+            • Random Prompt only samples valid supported values (biomes/times/layouts/goals).<br>
         </div>
     </div>
     
@@ -3822,8 +3815,6 @@ HTML = '''
             const show3 = levels >= 3;
             document.getElementById('goalL2').style.display = show2 ? 'block' : 'none';
             document.getElementById('goalL3').style.display = show3 ? 'block' : 'none';
-            document.getElementById('biomeL2Wrap').style.display = show2 ? 'flex' : 'none';
-            document.getElementById('biomeL3Wrap').style.display = show3 ? 'flex' : 'none';
         }
 
         function goalsByLevel() {
