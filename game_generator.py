@@ -46,8 +46,6 @@ class Config:
     IMAGE_MAX_RETRIES = 4
     IMAGE_RETRY_BASE_DELAY = 1.5
     DEBUG_SPRITES = True
-    TERRAIN_STYLE = "smooth"  # smooth | classic
-    
     TILE_SIZE = 72
     GAME_WIDTH = 1400
     GAME_HEIGHT = 900
@@ -3086,12 +3084,6 @@ class GameEngine:
         # Repair bridge state
         self.bridge_repaired = False
         self.bridge_tiles = set()
-        if "repair_bridge" in self.quest_types:
-            bx = self.config.MAP_WIDTH // 2
-            by = self.config.MAP_HEIGHT // 2
-            self.bridge_tiles = {(bx, by), (bx, by + 1)}
-            for t in self.bridge_tiles:
-                self.solid_outdoor.add(t)
 
         # Create 2 enterable buildings
         mh = self.config.MAP_HEIGHT
@@ -3181,6 +3173,66 @@ class GameEngine:
                 "items": [],
             },
         ]
+
+        # Ensure outdoor entrances are reachable from player spawn side.
+        start_tile_hint = (
+            int(self.game.get("player", {}).get("start_x", self.config.MAP_WIDTH // 2)),
+            int(self.game.get("player", {}).get("start_y", self.config.MAP_HEIGHT // 2)),
+        )
+        reachable_outdoor = self._compute_reachable(self.solid_outdoor, start_tile_hint)
+        occupied_entrances: set[tuple[int, int]] = set()
+        for b in self.buildings:
+            ex, ey = b["entrance"]
+            ex, ey = self._pick_free_reachable((ex, ey), reachable_outdoor, occupied_entrances, self.solid_outdoor)
+            b["entrance"] = (ex, ey)
+            occupied_entrances.add((ex, ey))
+
+        # Place repair bridge on an actual water crossing reachable from the player's side.
+        if "repair_bridge" in self.quest_types:
+            water = set(getattr(self.terrain, "water_tiles", set()))
+            path = set(getattr(self.terrain, "path_tiles", set()))
+            w, h = self.config.MAP_WIDTH, self.config.MAP_HEIGHT
+
+            def is_land(tx, ty):
+                return (0 <= tx < w and 0 <= ty < h and (tx, ty) not in water and (tx, ty) not in self.solid_outdoor)
+
+            candidates: list[tuple[int, set[tuple[int, int]]]] = []
+            for x, y in water:
+                # Horizontal span across water: [x,y] [x+1,y], banks at x-1 and x+2
+                if (x + 1, y) in water and is_land(x - 1, y) and is_land(x + 2, y):
+                    left_bank = (x - 1, y)
+                    right_bank = (x + 2, y)
+                    if left_bank in reachable_outdoor or right_bank in reachable_outdoor:
+                        score = 0
+                        if left_bank in path:
+                            score += 2
+                        if right_bank in path:
+                            score += 2
+                        score -= abs(y - start_tile_hint[1])
+                        candidates.append((score, {(x, y), (x + 1, y)}))
+                # Vertical span across water: [x,y] [x,y+1], banks at y-1 and y+2
+                if (x, y + 1) in water and is_land(x, y - 1) and is_land(x, y + 2):
+                    top_bank = (x, y - 1)
+                    bot_bank = (x, y + 2)
+                    if top_bank in reachable_outdoor or bot_bank in reachable_outdoor:
+                        score = 0
+                        if top_bank in path:
+                            score += 2
+                        if bot_bank in path:
+                            score += 2
+                        score -= abs(x - start_tile_hint[0])
+                        candidates.append((score, {(x, y), (x, y + 1)}))
+
+            if candidates:
+                candidates.sort(key=lambda v: v[0], reverse=True)
+                self.bridge_tiles = set(candidates[0][1])
+            else:
+                bx = self.config.MAP_WIDTH // 2
+                by = self.config.MAP_HEIGHT // 2
+                self.bridge_tiles = {(bx, by), (bx, by + 1)}
+
+            for t in self.bridge_tiles:
+                self.solid_outdoor.add(t)
 
         self.player_x = self.game["player"]["start_x"] * ts
         self.player_y = self.game["player"]["start_y"] * ts
@@ -4069,9 +4121,6 @@ class GameEngine:
                 mid = y + ts // 2
 
                 if self.bridge_repaired:
-                    if self.surfaces.get("bridge_fixed"):
-                        self._blit_sprite("bridge_fixed", bx, by)
-                        continue
                     # Fixed bridge: wooden planks + side ropes
                     pygame.draw.rect(self.screen, (150, 110, 75), (x, mid - 12, ts, 24))
                     for px in range(x + 10, x + ts - 10, 12):
@@ -4080,9 +4129,6 @@ class GameEngine:
                     pygame.draw.line(self.screen, (210, 190, 140), (x + 6, mid - 14), (x + ts - 6, mid - 14), 2)
                     pygame.draw.line(self.screen, (210, 190, 140), (x + 6, mid + 14), (x + ts - 6, mid + 14), 2)
                 else:
-                    if self.surfaces.get("bridge_broken"):
-                        self._blit_sprite("bridge_broken", bx, by)
-                        continue
                     # Broken bridge: partial boards with a gap + rubble
                     pygame.draw.rect(self.screen, (95, 75, 60), (x, mid - 12, ts, 24))
                     # Missing center boards
