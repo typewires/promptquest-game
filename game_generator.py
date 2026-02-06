@@ -2808,7 +2808,7 @@ class InteriorRenderer:
 
             # Left/right decorative beds in lobby corners for RPG vibe.
             bed_color = (210, 210, 235)
-            quilt = (150, 80, 90)
+            quilt = (150, 80, 70)
             pillow = (235, 235, 245)
             # Left bed
             pygame.draw.rect(screen, bed_color, (2 * ts, 3 * ts, ts * 4, ts * 2), border_radius=8)
@@ -2816,7 +2816,7 @@ class InteriorRenderer:
             pygame.draw.rect(screen, pillow, (2 * ts + 16, 3 * ts + 12, ts, ts // 2), border_radius=6)
             # Right bed
             pygame.draw.rect(screen, bed_color, ((self.mw - 6) * ts, 3 * ts, ts * 4, ts * 2), border_radius=8)
-            pygame.draw.rect(screen, (80, 120, 170), ((self.mw - 6) * ts + 10, 3 * ts + 18, ts * 4 - 20, ts * 2 - 28), border_radius=8)
+            pygame.draw.rect(screen, (132, 92, 70), ((self.mw - 6) * ts + 10, 3 * ts + 18, ts * 4 - 20, ts * 2 - 28), border_radius=8)
             pygame.draw.rect(screen, pillow, ((self.mw - 6) * ts + 16, 3 * ts + 12, ts, ts // 2), border_radius=6)
 
             # Table + mug
@@ -2831,7 +2831,7 @@ class InteriorRenderer:
             pygame.draw.rect(screen, (190, 170, 142), (2 * ts, 2 * ts, self.mw * ts - 4 * ts, self.mh * ts - 4 * ts), border_radius=12)
             # Bed
             pygame.draw.rect(screen, (220, 220, 238), (4 * ts, 4 * ts, ts * 5, ts * 3), border_radius=10)
-            pygame.draw.rect(screen, (110, 80, 130), (4 * ts + 12, 4 * ts + 28, ts * 5 - 24, ts * 3 - 40), border_radius=10)
+            pygame.draw.rect(screen, (148, 86, 70), (4 * ts + 12, 4 * ts + 28, ts * 5 - 24, ts * 3 - 40), border_radius=10)
             pygame.draw.rect(screen, (242, 242, 250), (4 * ts + 16, 4 * ts + 12, ts * 2, ts // 2), border_radius=6)
             # Side table + candle
             pygame.draw.rect(screen, (126, 88, 60), (10 * ts, 5 * ts, ts + 8, ts), border_radius=5)
@@ -3436,38 +3436,9 @@ class GameEngine:
         return None
 
     def _draw_indoor_setpieces(self):
-        if self.scene != "indoor" or not self.current_building:
-            return
-        scene_backdrop_active = False
-        scene_key = self._indoor_scene_key()
-        if scene_key and scene_key in self.surfaces:
-            scene_backdrop_active = True
-        ts = self.config.TILE_SIZE
-        theme = self.current_building.get("theme")
-        mode = getattr(self, "indoor_mode", "lobby")
-        if theme == "shop":
-            if scene_backdrop_active:
-                return
-            shelf_spots = [(2, 2), (6, 2), (10, 2), (3, 4), (9, 4)]
-            for sx, sy in shelf_spots:
-                if "shop_shelf" in self.surfaces:
-                    self._blit_sprite("shop_shelf", sx, sy)
-            if "shop_counter" in self.surfaces:
-                self._blit_sprite("shop_counter", self.config.MAP_WIDTH // 2, 6)
-        elif theme == "inn":
-            if mode == "lobby":
-                if "inn_desk" in self.surfaces and not scene_backdrop_active:
-                    self._blit_sprite("inn_desk", self.config.MAP_WIDTH // 2, 2)
-                # Numbered room door attached to wall.
-                rdx, rdy = self.current_building.get("room_door", (self.config.MAP_WIDTH // 2, 1))
-                if "inn_room_door" in self.surfaces and not scene_backdrop_active:
-                    self._blit_sprite("inn_room_door", rdx, rdy)
-                plaque = self.font.render(f"R{self.current_building.get('room_number', '3')}", True, (240, 230, 200))
-                self.screen.blit(plaque, (rdx * ts + 18, rdy * ts + 4))
-            elif mode == "room":
-                bed = self.current_building.get("bed_pos", (6, 5))
-                if "inn_bed" in self.surfaces and not scene_backdrop_active:
-                    self._blit_sprite("inn_bed", bed[0], bed[1])
+        # Intentionally disabled: generated indoor setpiece sprites can be oversized
+        # and visually inconsistent. Interiors are rendered by InteriorRenderer only.
+        return
 
     def _anim_key(self, base: str, moving: bool = False):
         alt = f"{base}_alt"
@@ -3967,7 +3938,8 @@ class GameEngine:
                 bed = self.current_building.get("bed_pos")
                 if bed:
                     bx, by = bed
-                    if abs(bx - px) <= 1 and abs(by - py) <= 1:
+                    # Room sprites can cover multiple tiles; allow a wider interaction zone.
+                    if abs(bx - px) <= 2 and abs(by - py) <= 2:
                         price = 12
                         if self.money < price:
                             self.msg(f"Not enough gold to rent a bed. Need {price}g.")
@@ -4141,13 +4113,9 @@ class GameEngine:
                     # Put items on the back shelves (not the middle of the floor).
                     shelf_spots = [(3, 2), (7, 2), (11, 2), (4, 4), (10, 4)]
                     gx, gy = shelf_spots[gi % len(shelf_spots)]
-                elif theme == "inn":
-                    # Put items near the table.
-                    gx = self.config.MAP_WIDTH // 2 - 1 + gi * 2
-                    gy = 6
                 else:
-                    gx = self.config.MAP_WIDTH // 2 - 3 + gi * 2
-                    gy = 6
+                    # Avoid drawing random item icons in inn/other interiors.
+                    continue
                 ox, oy = self._float_offset(g["id"])
                 sprite = "item"
                 if g["id"] == "planks" and "mat_planks" in self.surfaces:
