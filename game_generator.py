@@ -15,6 +15,7 @@ import time
 import random
 import math
 import hashlib
+import re
 import sys
 from io import BytesIO
 from flask import Flask, render_template_string, request, jsonify
@@ -107,18 +108,17 @@ def parse_level_goal_overrides(prompt: str) -> dict[int, list[str]]:
         return {}
     out: dict[int, list[str]] = {}
     p = str(prompt)
-    import re
 
     # Match: "level 1: cure, lost_item" or "level2 - key_and_door"
     # We capture the remainder and then extract allowed goal tokens in order.
-    pat = re.compile(r"(?im)\\blevel\\s*([1-3])\\s*[:\\-]\\s*(.+)$")
+    pat = re.compile(r"(?im)\blevel\s*([1-3])\s*[:\-]\s*(.+)$")
     for m in pat.finditer(p):
         try:
             idx = int(m.group(1))
         except Exception:
             continue
         remainder = str(m.group(2) or "")
-        found = re.findall(r"(?i)\\b(cure|key_and_door|lost_item|repair_bridge)\\b", remainder)
+        found = re.findall(r"(?i)\b(cure|key_and_door|lost_item|repair_bridge)\b", remainder)
         opts: list[str] = []
         for raw in found:
             gt = normalize_goal_type(raw)
@@ -154,6 +154,18 @@ def parse_goal_plan(raw: str | None) -> list[str]:
     return out
 
 
+def _normalize_quest_types(raw: list) -> list[str]:
+    """Normalize, filter invalid, and deduplicate a list of goal type strings."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for g in raw:
+        gt = normalize_goal_type(g)
+        if gt and gt not in seen:
+            seen.add(gt)
+            out.append(gt)
+    return out
+
+
 def infer_goal_from_prompt(prompt: str) -> str | None:
     p = (prompt or "").lower()
     if any(k in p for k in ["heal", "cure", "sick", "remedy", "medicine"]):
@@ -167,90 +179,62 @@ def infer_goal_from_prompt(prompt: str) -> str | None:
     return None
 
 
+def _match_keywords(prompt_lower: str, keyword_map: list[tuple[str, list[str]]]) -> str | None:
+    """Check keyword lists in order; return the first matching value."""
+    for value, keywords in keyword_map:
+        if any(k in prompt_lower for k in keywords):
+            return value
+    return None
+
+
+# Lookup tables for extract_env_hints (keyword list -> value)
+_TIME_KEYWORDS = [
+    ("night", ["night", "midnight", "moonlit", "starlit"]),
+    ("sunset", ["sunset", "dusk", "twilight"]),
+    ("dawn", ["dawn", "sunrise", "early morning"]),
+    ("day", ["day", "noon", "afternoon", "morning"]),
+]
+_TERRAIN_KEYWORDS = [
+    ("meadow", ["meadow", "field", "fields", "plains", "grassland"]),
+    ("desert", ["desert", "oasis", "dune", "sand"]),
+    ("beach", ["beach", "coast", "seaside", "shore", "port", "harbor"]),
+    ("snow", ["snow", "blizzard", "ice", "frost", "winter"]),
+    ("town", ["town", "village", "city", "market", "bazaar", "street"]),
+    ("castle", ["castle", "keep"]),
+    ("ruins", ["ruins", "temple", "ancient", "dungeon"]),
+    ("forest", ["forest", "woods", "grove", "jungle"]),
+]
+_LAYOUT_KEYWORDS = [
+    ("winding_road", ["winding_road", "winding road"]),
+    ("crossroads", ["crossroads"]),
+    ("ring_road", ["ring_road", "ring road"]),
+    ("lake_center", ["lake_center", "lake center", "central lake"]),
+    ("islands", ["islands"]),
+    ("ruin_ring", ["ruin_ring", "ruin ring"]),
+    ("oasis", ["oasis"]),
+    ("market_street", ["market", "bazaar", "street"]),
+    ("plaza", ["plaza", "square", "courtyard"]),
+    ("coastline", ["coast", "shore", "seaside"]),
+    ("maze_grove", ["maze", "labyrinth"]),
+    ("riverbend", ["river", "creek", "stream"]),
+]
+_THEME_TAG_KEYWORDS = [
+    "oasis", "market", "bazaar", "ruins", "temple", "castle",
+    "port", "harbor", "lantern", "festival", "mushroom", "vines", "statue",
+]
+
+
 def extract_env_hints(prompt: str) -> dict:
     """
     Heuristically extract environment intent from the user prompt so the generated map
     better matches the vibe even if the LLM returns generic terrain/features.
     """
     p = (prompt or "").lower()
+    tod = _match_keywords(p, _TIME_KEYWORDS)
+    terrain = _match_keywords(p, _TERRAIN_KEYWORDS)
+    layout_style = _match_keywords(p, _LAYOUT_KEYWORDS)
 
-    # Time of day
-    tod = None
-    if any(k in p for k in ["night", "midnight", "moonlit", "starlit"]):
-        tod = "night"
-    elif any(k in p for k in ["sunset", "dusk", "twilight"]):
-        tod = "sunset"
-    elif any(k in p for k in ["dawn", "sunrise", "early morning"]):
-        tod = "dawn"
-    elif any(k in p for k in ["day", "noon", "afternoon", "morning"]):
-        tod = "day"
-
-    # Terrain / biome
-    terrain = None
-    if any(k in p for k in ["meadow", "field", "fields", "plains", "grassland"]):
-        terrain = "meadow"
-    if any(k in p for k in ["desert", "oasis", "dune", "sand"]):
-        terrain = "desert"
-    elif any(k in p for k in ["beach", "coast", "seaside", "shore", "port", "harbor"]):
-        terrain = "beach"
-    elif any(k in p for k in ["snow", "blizzard", "ice", "frost", "winter"]):
-        terrain = "snow"
-    elif any(k in p for k in ["town", "village", "city", "market", "bazaar", "street"]):
-        terrain = "town"
-    elif any(k in p for k in ["castle", "keep"]):
-        terrain = "castle"
-    elif any(k in p for k in ["ruins", "temple", "ancient", "dungeon"]):
-        terrain = "ruins"
-    elif any(k in p for k in ["forest", "woods", "grove", "jungle"]):
-        terrain = "forest"
-
-    # Layout style
-    layout_style = None
-    # Allow explicit layout style tokens in the prompt.
-    if "winding_road" in p or "winding road" in p:
-        layout_style = "winding_road"
-    elif "crossroads" in p:
-        layout_style = "crossroads"
-    elif "ring_road" in p or "ring road" in p:
-        layout_style = "ring_road"
-    elif "lake_center" in p or "lake center" in p or "central lake" in p:
-        layout_style = "lake_center"
-    elif "islands" in p:
-        layout_style = "islands"
-    elif "ruin_ring" in p or "ruin ring" in p:
-        layout_style = "ruin_ring"
-    if "oasis" in p:
-        layout_style = "oasis"
-    elif any(k in p for k in ["market", "bazaar", "street"]):
-        layout_style = "market_street"
-    elif any(k in p for k in ["plaza", "square", "courtyard"]):
-        layout_style = "plaza"
-    elif any(k in p for k in ["coast", "shore", "seaside"]):
-        layout_style = "coastline"
-    elif any(k in p for k in ["maze", "labyrinth"]):
-        layout_style = "maze_grove"
-    elif any(k in p for k in ["river", "creek", "stream"]):
-        layout_style = "riverbend"
-
-    # Theme tags drive extra decor overlays.
-    tags = set()
-    for k in [
-        "oasis",
-        "market",
-        "bazaar",
-        "ruins",
-        "temple",
-        "castle",
-        "port",
-        "harbor",
-        "lantern",
-        "festival",
-        "mushroom",
-        "vines",
-        "statue",
-    ]:
-        if k in p:
-            tags.add(k)
+    tags = {k for k in _THEME_TAG_KEYWORDS if k in p}
     if terrain:
         tags.add(terrain)
     if tod:
@@ -312,55 +296,33 @@ class EffectsManager:
             s.set_alpha(int(40 * (self.flash / 10)))
             screen.blit(s, (0, 0))
     
+    def _emit(self, x, y, colors, count, speed_range, vy_offset, life_range, size_range, gravity, flash_dur=0, flash_color=None):
+        """Spawn particles in a circle — shared by sparkle/pickup/complete/smoke."""
+        for _ in range(count):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(*speed_range)
+            self.particles.append(Particle(
+                x, y, random.choice(colors) if isinstance(colors, list) else colors,
+                math.cos(angle) * speed, math.sin(angle) * speed + vy_offset,
+                random.randint(*life_range), random.randint(*size_range), gravity
+            ))
+        if flash_dur and self.allow_flash:
+            self.flash = flash_dur
+            self.flash_color = flash_color
+
     def sparkle(self, x, y):
         colors = [(255, 255, 100), (100, 200, 255), (255, 100, 255), (255, 255, 255)]
-        for _ in range(20):
-            angle = random.uniform(0, 2 * math.pi)
-            speed = random.uniform(1, 4)
-            self.particles.append(Particle(
-                x, y, random.choice(colors),
-                math.cos(angle) * speed, math.sin(angle) * speed - 2,
-                random.randint(25, 45), random.randint(3, 6), -0.05
-            ))
-        if self.allow_flash:
-            self.flash = 6
-            self.flash_color = (255, 255, 200)
-    
+        self._emit(x, y, colors, 20, (1, 4), -2, (25, 45), (3, 6), -0.05, 6, (255, 255, 200))
+
     def pickup(self, x, y):
-        for _ in range(15):
-            angle = random.uniform(0, 2 * math.pi)
-            self.particles.append(Particle(
-                x, y, (255, 230, 100),
-                math.cos(angle) * 3, math.sin(angle) * 3 - 1,
-                20, 5, -0.1
-            ))
-        if self.allow_flash:
-            self.flash = 4
-            self.flash_color = (255, 255, 150)
-    
+        self._emit(x, y, (255, 230, 100), 15, (3, 3), -1, (20, 20), (5, 5), -0.1, 4, (255, 255, 150))
+
     def complete(self, x, y):
         colors = [(100, 255, 100), (200, 255, 200), (150, 255, 150)]
-        for _ in range(25):
-            angle = random.uniform(0, 2 * math.pi)
-            speed = random.uniform(2, 5)
-            self.particles.append(Particle(
-                x, y, random.choice(colors),
-                math.cos(angle) * speed, math.sin(angle) * speed,
-                random.randint(30, 50), random.randint(4, 7), 0
-            ))
-        if self.allow_flash:
-            self.flash = 8
-            self.flash_color = (150, 255, 150)
+        self._emit(x, y, colors, 25, (2, 5), 0, (30, 50), (4, 7), 0, 8, (150, 255, 150))
 
     def smoke(self, x, y, color=(120, 255, 140)):
-        for _ in range(25):
-            angle = random.uniform(0, 2 * math.pi)
-            speed = random.uniform(0.5, 2.5)
-            self.particles.append(Particle(
-                x, y, color,
-                math.cos(angle) * speed, math.sin(angle) * speed - 1.5,
-                random.randint(25, 45), random.randint(4, 7), -0.03
-            ))
+        self._emit(x, y, color, 25, (0.5, 2.5), -1.5, (25, 45), (4, 7), -0.03)
 
 
 # ============================================================
@@ -430,20 +392,18 @@ class OpenAIClient:
         }.get(role, "sprite")
 
         # Role-specific quality prompts to prevent vague blobs
-        if role in ["player", "npc", "npc_healed"]:
-            subject = f"{prompt}. Full-body single character. Clear face, hair, hands, boots. Distinct silhouette. {role_hint}."
-        elif role == "key":
-            subject = f"{prompt}. Single ornate brass key with visible teeth and keyring hole. Crisp outline. {role_hint}."
-        elif role == "chest":
-            subject = f"{prompt}. Single wooden treasure chest with metal bands and latch. 3/4 top-down view. {role_hint}."
-        elif role == "door":
-            subject = f"{prompt}. Single wooden door or stone arch door with clear handle/lock. 3/4 top-down view. {role_hint}."
-        elif role == "cauldron":
-            subject = f"{prompt}. Single iron cauldron with glowing liquid and small details (runes, bubbles). 3/4 top-down view. {role_hint}."
-        elif role == "item":
-            subject = f"{prompt}. Single item only. Clean outline. Clear shape and material. {role_hint}."
-        else:
-            subject = f"{prompt}. Single prop only. Clean outline. Clear function. {role_hint}."
+        role_details = {
+            "player": "Full-body single character. Clear face, hair, hands, boots. Distinct silhouette.",
+            "npc": "Full-body single character. Clear face, hair, hands, boots. Distinct silhouette.",
+            "npc_healed": "Full-body single character. Clear face, hair, hands, boots. Distinct silhouette.",
+            "key": "Single ornate brass key with visible teeth and keyring hole. Crisp outline.",
+            "chest": "Single wooden treasure chest with metal bands and latch. 3/4 top-down view.",
+            "door": "Single wooden door or stone arch door with clear handle/lock. 3/4 top-down view.",
+            "cauldron": "Single iron cauldron with glowing liquid and small details (runes, bubbles). 3/4 top-down view.",
+            "item": "Single item only. Clean outline. Clear shape and material.",
+        }
+        detail = role_details.get(role, "Single prop only. Clean outline. Clear function.")
+        subject = f"{prompt}. {detail} {role_hint}."
 
         styled_prompt = f"""Create a single video game {role} sprite in high-quality 32-bit pixel art style.
 Style goals: clean outlines, readable silhouette, rich shading, cozy lighting, classic JRPG overworld look.
@@ -576,8 +536,8 @@ Subject: {subject}"""
                     pixels[x, y] = (0, 0, 0, 0)
         return img
 
-    def _fit_to_square(self, img: Image.Image, size: int = 128, pad: int = 4) -> Image.Image:
-        """Crop to non-transparent pixels and scale to fill the square."""
+    def _nontransparent_bbox(self, img: Image.Image):
+        """Return (min_x, min_y, max_x, max_y) of non-transparent pixels, or None."""
         img = img.convert("RGBA")
         pixels = img.load()
         min_x, min_y = img.width, img.height
@@ -591,9 +551,43 @@ Subject: {subject}"""
                     min_y = min(min_y, y)
                     max_x = max(max_x, x)
                     max_y = max(max_y, y)
-        if not found:
-            return img
+        return (min_x, min_y, max_x, max_y) if found else None
 
+    def _connected_components(self, img: Image.Image) -> list[tuple[int, tuple]]:
+        """Return [(area, (x0, y0, x1, y1)), ...] sorted largest-first."""
+        img = img.convert("RGBA")
+        w, h = img.size
+        px = img.load()
+        visited = [[False] * w for _ in range(h)]
+        components = []
+        for y in range(h):
+            for x in range(w):
+                if visited[y][x] or px[x, y][3] == 0:
+                    continue
+                stack = [(x, y)]
+                visited[y][x] = True
+                min_x, min_y, max_x, max_y = x, y, x, y
+                area = 0
+                while stack:
+                    cx, cy = stack.pop()
+                    area += 1
+                    min_x, min_y = min(min_x, cx), min(min_y, cy)
+                    max_x, max_y = max(max_x, cx), max(max_y, cy)
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = cx + dx, cy + dy
+                        if 0 <= nx < w and 0 <= ny < h and not visited[ny][nx] and px[nx, ny][3] > 0:
+                            visited[ny][nx] = True
+                            stack.append((nx, ny))
+                components.append((area, (min_x, min_y, max_x + 1, max_y + 1)))
+        components.sort(key=lambda c: c[0], reverse=True)
+        return components
+
+    def _fit_to_square(self, img: Image.Image, size: int = 128, pad: int = 4) -> Image.Image:
+        """Crop to non-transparent pixels and scale to fill the square."""
+        bbox = self._nontransparent_bbox(img)
+        if not bbox:
+            return img
+        min_x, min_y, max_x, max_y = bbox
         crop = img.crop((min_x, min_y, max_x + 1, max_y + 1))
         target = max(1, size - pad * 2)
         scale = min(target / crop.width, target / crop.height)
@@ -607,118 +601,37 @@ Subject: {subject}"""
         return canvas
 
     def _crop_to_largest_component(self, img: Image.Image) -> Image.Image:
-        """Crop to the largest connected non-transparent component (helps avoid multi-character outputs)."""
-        img = img.convert("RGBA")
-        w, h = img.size
-        px = img.load()
-        visited = [[False] * w for _ in range(h)]
-
-        def neighbors(x, y):
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h:
-                    yield nx, ny
-
-        best_area = 0
-        best_bbox = None
-
-        for y in range(h):
-            for x in range(w):
-                if visited[y][x]:
-                    continue
-                if px[x, y][3] == 0:
-                    continue
-                # BFS/DFS
-                stack = [(x, y)]
-                visited[y][x] = True
-                min_x, min_y = x, y
-                max_x, max_y = x, y
-                area = 0
-                while stack:
-                    cx, cy = stack.pop()
-                    area += 1
-                    min_x = min(min_x, cx)
-                    min_y = min(min_y, cy)
-                    max_x = max(max_x, cx)
-                    max_y = max(max_y, cy)
-                    for nx, ny in neighbors(cx, cy):
-                        if not visited[ny][nx] and px[nx, ny][3] > 0:
-                            visited[ny][nx] = True
-                            stack.append((nx, ny))
-                if area > best_area:
-                    best_area = area
-                    best_bbox = (min_x, min_y, max_x + 1, max_y + 1)
-
-        if best_bbox and best_area > 30:
-            return img.crop(best_bbox)
+        """Crop to the largest connected non-transparent component."""
+        components = self._connected_components(img)
+        if components and components[0][0] > 30:
+            return img.crop(components[0][1])
         return img
 
     def _component_areas(self, img: Image.Image) -> list:
-        """Return connected-component areas for alpha>0 pixels."""
-        img = img.convert("RGBA")
-        w, h = img.size
-        px = img.load()
-        visited = [[False] * w for _ in range(h)]
-        areas = []
-
-        def neighbors(x, y):
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h:
-                    yield nx, ny
-
-        for y in range(h):
-            for x in range(w):
-                if visited[y][x] or px[x, y][3] == 0:
-                    continue
-                stack = [(x, y)]
-                visited[y][x] = True
-                area = 0
-                while stack:
-                    cx, cy = stack.pop()
-                    area += 1
-                    for nx, ny in neighbors(cx, cy):
-                        if not visited[ny][nx] and px[nx, ny][3] > 0:
-                            visited[ny][nx] = True
-                            stack.append((nx, ny))
-                areas.append(area)
-        areas.sort(reverse=True)
-        return areas
+        """Return connected-component areas (largest first)."""
+        return [area for area, _ in self._connected_components(img)]
 
     def _extract_largest_sprite(self, img: Image.Image) -> Image.Image:
         """Heuristic: if image looks like a sprite sheet, crop the densest column."""
-        img = img.convert("RGBA")
-        pixels = img.load()
-        min_x, min_y = img.width, img.height
-        max_x, max_y = 0, 0
-        found = False
-        for y in range(img.height):
-            for x in range(img.width):
-                if pixels[x, y][3] > 0:
-                    found = True
-                    min_x = min(min_x, x)
-                    min_y = min(min_y, y)
-                    max_x = max(max_x, x)
-                    max_y = max(max_y, y)
-        if not found:
+        bbox = self._nontransparent_bbox(img)
+        if not bbox:
             return img
+        min_x, min_y, max_x, max_y = bbox
         w = max_x - min_x + 1
         h = max_y - min_y + 1
         if w <= h * 1.2:
             return img
 
         # Sprite sheet likely: split into 3 or 4 columns and pick densest
+        img = img.convert("RGBA")
+        pixels = img.load()
         columns = 3 if w / h < 3.5 else 4
         best = None
         best_count = -1
         for i in range(columns):
             x0 = int(min_x + i * w / columns)
             x1 = int(min_x + (i + 1) * w / columns)
-            count = 0
-            for y in range(min_y, max_y + 1):
-                for x in range(x0, x1):
-                    if pixels[x, y][3] > 0:
-                        count += 1
+            count = sum(1 for y in range(min_y, max_y + 1) for x in range(x0, x1) if pixels[x, y][3] > 0)
             if count > best_count:
                 best_count = count
                 best = (x0, min_y, x1, max_y + 1)
@@ -729,12 +642,7 @@ Subject: {subject}"""
     def _nontransparent_pixels(self, img: Image.Image) -> int:
         img = img.convert("RGBA")
         pixels = img.load()
-        count = 0
-        for y in range(img.height):
-            for x in range(img.width):
-                if pixels[x, y][3] > 0:
-                    count += 1
-        return count
+        return sum(1 for y in range(img.height) for x in range(img.width) if pixels[x, y][3] > 0)
 
     def _placeholder(self, prompt: str, role: str = "sprite") -> Image.Image:
         """Fallback pixel sprite with multiple colors (no purple blocks)."""
@@ -759,71 +667,60 @@ Subject: {subject}"""
                                 p2[nx, ny] = (25, 25, 35, 255)
             return img_copy
 
-        # Simple item props
-        if any(k in p for k in ["key", "chest", "door", "cauldron", "potion", "orb", "gem", "lantern"]):
-            if "key" in p:
-                draw_rect(26, 28, 38, 32, (240, 210, 80, 255))
-                draw_rect(22, 26, 26, 34, (240, 210, 80, 255))
-                draw_rect(36, 32, 40, 34, (200, 170, 60, 255))
-            elif "chest" in p:
-                draw_rect(18, 30, 46, 46, (150, 90, 50, 255))
-                draw_rect(18, 28, 46, 33, (180, 120, 70, 255))
-                draw_rect(30, 36, 34, 40, (230, 200, 90, 255))
-            elif "door" in p:
-                draw_rect(20, 18, 44, 52, (120, 80, 60, 255))
-                draw_rect(22, 22, 42, 50, (150, 100, 70, 255))
-                draw_rect(38, 34, 40, 36, (220, 200, 90, 255))
-            elif "cauldron" in p or "potion" in p:
-                draw_rect(22, 34, 42, 48, (60, 60, 70, 255))
-                draw_rect(24, 30, 40, 34, (120, 255, 140, 255))
-                draw_rect(28, 32, 30, 34, (255, 255, 255, 255))
-            else:
-                draw_rect(26, 28, 38, 40, (120, 180, 255, 255))
-                draw_rect(28, 30, 36, 38, (200, 240, 255, 255))
+        # Item shapes: keyword -> list of (x0, y0, x1, y1, color) rects
+        item_shapes = {
+            "key": [(26,28,38,32,(240,210,80,255)), (22,26,26,34,(240,210,80,255)), (36,32,40,34,(200,170,60,255))],
+            "chest": [(18,30,46,46,(150,90,50,255)), (18,28,46,33,(180,120,70,255)), (30,36,34,40,(230,200,90,255))],
+            "door": [(20,18,44,52,(120,80,60,255)), (22,22,42,50,(150,100,70,255)), (38,34,40,36,(220,200,90,255))],
+            "cauldron": [(22,34,42,48,(60,60,70,255)), (24,30,40,34,(120,255,140,255)), (28,32,30,34,(255,255,255,255))],
+        }
+        # Check for item keywords
+        for keyword, rects in item_shapes.items():
+            if keyword in p or (keyword == "cauldron" and "potion" in p):
+                for x0, y0, x1, y1, color in rects:
+                    draw_rect(x0, y0, x1, y1, color)
+                return outline()
+        # Generic item fallback
+        if any(k in p for k in ["orb", "gem", "lantern"]):
+            draw_rect(26, 28, 38, 40, (120, 180, 255, 255))
+            draw_rect(28, 30, 36, 38, (200, 240, 255, 255))
             return outline()
 
-        # Character placeholder (more fantasy flavor)
+        # Character placeholder
         skin = (240, 200, 170, 255)
         hair = (90, 60, 30, 255)
-        if role in ["npc", "npc_healed"]:
-            outfit1 = (180, 120, 60, 255)
-            outfit2 = (90, 140, 90, 255)
-        else:
-            outfit1 = (70, 130, 220, 255)
-            outfit2 = (220, 80, 80, 255)
+        outfit1 = (180, 120, 60, 255) if role in ["npc", "npc_healed"] else (70, 130, 220, 255)
+        outfit2 = (90, 140, 90, 255) if role in ["npc", "npc_healed"] else (220, 80, 80, 255)
 
-        # Head
+        # Head + hair (shared by all characters)
         for y in range(18, 28):
             for x in range(26, 38):
                 px[x, y] = skin
-        # Hair
         draw_rect(26, 18, 38, 21, hair)
-        # Torso / robe
-        if "wizard" in p or "mage" in p or "robe" in p:
-            draw_rect(22, 28, 42, 46, outfit1)
-            draw_rect(30, 28, 34, 46, outfit2)
-            # Staff
-            draw_rect(44, 26, 46, 52, (120, 80, 50, 255))
-            draw_rect(42, 24, 48, 28, (120, 200, 255, 255))
-        elif "princess" in p or "queen" in p:
-            draw_rect(22, 28, 42, 46, outfit1)
-            draw_rect(24, 30, 40, 34, outfit2)
-            # Crown
-            draw_rect(28, 14, 36, 18, (240, 210, 80, 255))
-            draw_rect(30, 12, 34, 14, (240, 210, 80, 255))
-        elif "king" in p:
-            draw_rect(22, 28, 42, 44, outfit1)
-            draw_rect(22, 36, 42, 38, outfit2)
-            draw_rect(28, 14, 36, 18, (240, 210, 80, 255))
-            draw_rect(26, 18, 38, 20, (200, 50, 50, 255))
+
+        # Torso variants: keyword -> extra rects on top of the base outfit
+        torso_extras = {
+            "wizard": [(22,28,42,46,None), (30,28,34,46,None), (44,26,46,52,(120,80,50,255)), (42,24,48,28,(120,200,255,255))],
+            "princess": [(22,28,42,46,None), (24,30,40,34,None), (28,14,36,18,(240,210,80,255)), (30,12,34,14,(240,210,80,255))],
+            "king": [(22,28,42,44,None), (22,36,42,38,None), (28,14,36,18,(240,210,80,255)), (26,18,38,20,(200,50,50,255))],
+        }
+        matched = None
+        for keyword in torso_extras:
+            aliases = {"wizard": ["wizard", "mage", "robe"], "princess": ["princess", "queen"]}.get(keyword, [keyword])
+            if any(a in p for a in aliases):
+                matched = keyword
+                break
+
+        if matched:
+            for i, (x0, y0, x1, y1, color) in enumerate(torso_extras[matched]):
+                draw_rect(x0, y0, x1, y1, color or (outfit1 if i == 0 else outfit2))
         else:
             draw_rect(24, 28, 40, 40, outfit1)
-            # Belt/accents
             draw_rect(24, 34, 40, 35, outfit2)
-        # Legs
+
+        # Legs + boots (shared)
         draw_rect(26, 40, 31, 50, (60, 60, 80, 255))
         draw_rect(33, 40, 38, 50, (60, 60, 80, 255))
-        # Boots
         draw_rect(25, 50, 31, 53, (90, 60, 40, 255))
         draw_rect(33, 50, 39, 53, (90, 60, 40, 255))
 
@@ -878,8 +775,7 @@ class GameDesigner:
     def design_game(self, user_prompt: str, quest_plan_override: list[str] | None = None) -> dict:
         global LAST_QUEST_TYPE
         quest_types = list(ALLOWED_GOALS)
-        quest_plan_override = [normalize_goal_type(g) for g in (quest_plan_override or [])]
-        quest_plan_override = [g for g in quest_plan_override if g]
+        quest_plan_override = _normalize_quest_types(quest_plan_override or [])
         if quest_plan_override:
             quest_type_hint = quest_plan_override[0]
         elif LAST_QUEST_TYPE in quest_types:
@@ -999,16 +895,10 @@ RULES:
         quest = game.get("quest") or {}
 
         # Normalize per-level goal plan.
-        allowed = set(ALLOWED_GOALS)
-        plan: list[str] = []
-        if quest_plan_override:
-            plan = [g for g in quest_plan_override if g in allowed]
+        plan = _normalize_quest_types(quest_plan_override) if quest_plan_override else []
         if not plan:
             base = normalize_goal_type(quest.get("type"))
-            plan = [base] if base in allowed else [random.choice(list(allowed))]
-        # Preserve order, remove duplicates.
-        seen: set[str] = set()
-        plan = [g for g in plan if not (g in seen or seen.add(g))]
+            plan = [base] if base in ALLOWED_GOALS else [random.choice(ALLOWED_GOALS)]
         quest["types"] = plan
         quest["type"] = plan[0]
 
@@ -1251,34 +1141,30 @@ RULES:
             ]
         return random.choice(base)
 
+    _STEP_TEMPLATES = {
+        "cure": ["Talk to the patient", "Find three ingredients", "Brew the remedy at the cauldron", "Deliver it to the patient"],
+        "key_and_door": ["Ask for directions", "Open the old chest", "Claim the key", "Unlock the sealed door"],
+        "lost_item": ["Ask what was lost", "Search the area", "Recover the item", "Return it to the owner"],
+        "repair_bridge": ["Talk to the foreman", "Visit the shop and buy planks, rope, and nails", "Repair the bridge", "Cross safely"],
+    }
+
     def _flavored_steps(self, quest: dict) -> list:
-        if quest.get("type") == "cure":
-            return ["Talk to the patient", "Find three ingredients", "Brew the remedy at the cauldron", "Deliver it to the patient"]
-        if quest.get("type") == "key_and_door":
-            return ["Ask for directions", "Open the old chest", "Claim the key", "Unlock the sealed door"]
-        if quest.get("type") == "lost_item":
-            return ["Ask what was lost", "Search the area", "Recover the item", "Return it to the owner"]
-        if quest.get("type") == "repair_bridge":
-            return ["Talk to the foreman", "Visit the shop and buy planks, rope, and nails", "Repair the bridge", "Cross safely"]
-        return ["Explore the area", "Complete the objective"]
+        return self._STEP_TEMPLATES.get(quest.get("type"), ["Explore the area", "Complete the objective"])
     
+    _FALLBACK_BIOMES = [
+        (["night", "dark", "moon", "spooky"], "night", "castle"),
+        (["forest", "tree", "wood"], "day", "forest"),
+        (["beach", "ocean", "sea"], "day", "beach"),
+        (["snow", "ice", "winter"], "day", "snow"),
+    ]
+
     def _fallback(self, prompt: str, quest_type: str = "cure") -> dict:
         prompt_lower = prompt.lower()
-        if any(w in prompt_lower for w in ["night", "dark", "moon", "spooky"]):
-            time = "night"
-            terrain = "castle"
-        elif any(w in prompt_lower for w in ["forest", "tree", "wood"]):
-            time = "day"
-            terrain = "forest"
-        elif any(w in prompt_lower for w in ["beach", "ocean", "sea"]):
-            time = "day"
-            terrain = "beach"
-        elif any(w in prompt_lower for w in ["snow", "ice", "winter"]):
-            time = "day"
-            terrain = "snow"
-        else:
-            time = "day"
-            terrain = "meadow"
+        time, terrain = "day", "meadow"
+        for keywords, t, ter in self._FALLBACK_BIOMES:
+            if any(w in prompt_lower for w in keywords):
+                time, terrain = t, ter
+                break
         
         base_game = {
             "title": f"Quest: {prompt[:12]}",
@@ -1342,9 +1228,9 @@ class SpriteGenerator:
     def generate_all(self, game: dict, reuse_player_sprite: Image.Image | None = None) -> dict:
         sprites = {}
         quest = game.get("quest", {})
-        quest_types = quest.get("types") or ([quest.get("type")] if quest.get("type") else [])
-        quest_types = [normalize_goal_type(g) for g in quest_types]
-        quest_types = [g for g in quest_types if g]
+        quest_types = _normalize_quest_types(
+            quest.get("types") or ([quest.get("type")] if quest.get("type") else [])
+        )
         items = quest.get("items", [])
         theme = f"{game.get('terrain', {}).get('type', '')} {game.get('time_of_day', 'day')} {game.get('story', '')}"
         
@@ -1656,18 +1542,18 @@ class TerrainRenderer:
         terrain_type = game.get("terrain", {}).get("type", "meadow")
         palette_key = f"{time_of_day}_{terrain_type}"
         if palette_key not in self.PALETTES:
-            # Fallback
-            # Try biome-aware fallbacks first.
-            if "desert" in terrain_type:
-                palette_key = "night_desert" if "night" in time_of_day else "day_desert"
-            elif "ruin" in terrain_type:
-                palette_key = "day_ruins"
-            elif "night" in time_of_day:
-                palette_key = "night_castle"
-            elif "sunset" in time_of_day or "dusk" in time_of_day:
-                palette_key = "sunset_meadow"
-            else:
-                palette_key = "day_meadow"
+            # Biome/time fallback mapping
+            fallbacks = [
+                (lambda: "desert" in terrain_type, lambda: "night_desert" if "night" in time_of_day else "day_desert"),
+                (lambda: "ruin" in terrain_type, lambda: "day_ruins"),
+                (lambda: "night" in time_of_day, lambda: "night_castle"),
+                (lambda: "sunset" in time_of_day or "dusk" in time_of_day, lambda: "sunset_meadow"),
+            ]
+            palette_key = "day_meadow"
+            for check, result in fallbacks:
+                if check():
+                    palette_key = result()
+                    break
         
         self.palette = self.PALETTES[palette_key]
         terrain = game.get("terrain", {}) or {}
@@ -2072,6 +1958,15 @@ class TerrainRenderer:
 
 class InteriorRenderer:
     """Simple interior map renderer (shop/house) with walls and floor."""
+    # Theme colors: (floor, floor2, wall, wall2, shelf, accent)
+    THEMES = {
+        "apothecary": ((135,105,85), (125,95,78), (55,55,75), (75,75,105), (105,65,42), (120,200,255)),
+        "inn":        ((155,125,95), (145,115,88), (65,60,70), (90,80,100), (120,80,55), (255,220,120)),
+        "house":      ((150,135,115), (140,125,108), (70,70,85), (95,95,120), (125,85,58), (200,255,200)),
+        "shop":       ((150,120,90), (140,110,85), (60,60,80), (80,80,110), (110,70,45), (120,200,255)),
+    }
+    _DEFAULT_THEME = ((140,130,120), (130,120,110), (70,70,90), (90,90,120), (120,80,55), (255,220,120))
+
     def __init__(self, config: Config, theme: str = "shop", door_x: int | None = None):
         self.config = config
         self.ts = config.TILE_SIZE
@@ -2079,42 +1974,9 @@ class InteriorRenderer:
         self.mh = config.MAP_HEIGHT
         self.theme = theme
         self.door_x = door_x if door_x is not None else self.mw // 2
-
-        if theme == "apothecary":
-            self.floor = (135, 105, 85)
-            self.floor2 = (125, 95, 78)
-            self.wall = (55, 55, 75)
-            self.wall2 = (75, 75, 105)
-            self.shelf = (105, 65, 42)
-            self.accent = (120, 200, 255)
-        elif theme == "inn":
-            self.floor = (155, 125, 95)
-            self.floor2 = (145, 115, 88)
-            self.wall = (65, 60, 70)
-            self.wall2 = (90, 80, 100)
-            self.shelf = (120, 80, 55)
-            self.accent = (255, 220, 120)
-        elif theme == "house":
-            self.floor = (150, 135, 115)
-            self.floor2 = (140, 125, 108)
-            self.wall = (70, 70, 85)
-            self.wall2 = (95, 95, 120)
-            self.shelf = (125, 85, 58)
-            self.accent = (200, 255, 200)
-        elif theme == "shop":
-            self.floor = (150, 120, 90)
-            self.floor2 = (140, 110, 85)
-            self.wall = (60, 60, 80)
-            self.wall2 = (80, 80, 110)
-            self.shelf = (110, 70, 45)
-            self.accent = (120, 200, 255)
-        else:
-            self.floor = (140, 130, 120)
-            self.floor2 = (130, 120, 110)
-            self.wall = (70, 70, 90)
-            self.wall2 = (90, 90, 120)
-            self.shelf = (120, 80, 55)
-            self.accent = (255, 220, 120)
+        self.floor, self.floor2, self.wall, self.wall2, self.shelf, self.accent = (
+            self.THEMES.get(theme, self._DEFAULT_THEME)
+        )
 
     def draw(self, screen, t: float = 0.0):
         ts = self.ts
@@ -2293,12 +2155,9 @@ class GameEngine:
         ts = self.config.TILE_SIZE
         quest = self.game.get("quest", {})
         self.quest = quest
-        self.quest_types = quest.get("types") or ([quest.get("type")] if quest.get("type") else [])
-        self.quest_types = [normalize_goal_type(g) for g in self.quest_types]
-        self.quest_types = [g for g in self.quest_types if g]
-        # Preserve order, remove duplicates.
-        seen: set[str] = set()
-        self.quest_types = [g for g in self.quest_types if not (g in seen or seen.add(g))]
+        self.quest_types = _normalize_quest_types(
+            quest.get("types") or ([quest.get("type")] if quest.get("type") else [])
+        )
         if not self.quest_types:
             self.quest_types = ["lost_item"]
         # Back-compat: some UI hints still reference a single quest_type.
@@ -2512,6 +2371,12 @@ class GameEngine:
             ty = max(0, min(self.config.MAP_HEIGHT - 1, int(ty)))
             return tx, ty
 
+        def place(entity, default_x, default_y):
+            entity["x"], entity["y"] = clamp_tile(entity.get("x", default_x), entity.get("y", default_y))
+            entity["x"], entity["y"] = self._find_open_tile(entity["x"], entity["y"])
+            entity["x"], entity["y"] = self._pick_free_reachable((entity["x"], entity["y"]), reachable, occupied, solid_set)
+            occupied.add((entity["x"], entity["y"]))
+
         # Ensure all critical entities are reachable from the player start.
         ts = self.config.TILE_SIZE
         start_tile = (int(self.player_x // ts), int(self.player_y // ts))
@@ -2519,41 +2384,14 @@ class GameEngine:
         reachable = self._compute_reachable(solid_set, start_tile)
         occupied: set[tuple[int, int]] = {start_tile}
 
-        # NPC
         npc = self.game.get("npc", {})
         if npc:
-            npc["x"], npc["y"] = clamp_tile(npc.get("x", 5), npc.get("y", 4))
-            npc["x"], npc["y"] = self._find_open_tile(npc["x"], npc["y"])
-            npc["x"], npc["y"] = self._pick_free_reachable((npc["x"], npc["y"]), reachable, occupied, solid_set)
-            occupied.add((npc["x"], npc["y"]))
-
-        # Items
+            place(npc, 5, 4)
         for item in self.items:
-            item["x"], item["y"] = clamp_tile(item.get("x", 8), item.get("y", 6))
-            item["x"], item["y"] = self._find_open_tile(item["x"], item["y"])
-            item["x"], item["y"] = self._pick_free_reachable((item["x"], item["y"]), reachable, occupied, solid_set)
-            occupied.add((item["x"], item["y"]))
-
-        # Mix station
-        if self.mix_station:
-            self.mix_station["x"], self.mix_station["y"] = clamp_tile(self.mix_station.get("x", 9), self.mix_station.get("y", 5))
-            self.mix_station["x"], self.mix_station["y"] = self._find_open_tile(self.mix_station["x"], self.mix_station["y"])
-            self.mix_station["x"], self.mix_station["y"] = self._pick_free_reachable((self.mix_station["x"], self.mix_station["y"]), reachable, occupied, solid_set)
-            occupied.add((self.mix_station["x"], self.mix_station["y"]))
-
-        # Chest
-        if self.chest:
-            self.chest["x"], self.chest["y"] = clamp_tile(self.chest.get("x", 12), self.chest.get("y", 4))
-            self.chest["x"], self.chest["y"] = self._find_open_tile(self.chest["x"], self.chest["y"])
-            self.chest["x"], self.chest["y"] = self._pick_free_reachable((self.chest["x"], self.chest["y"]), reachable, occupied, solid_set)
-            occupied.add((self.chest["x"], self.chest["y"]))
-
-        # Door
-        if self.door:
-            self.door["x"], self.door["y"] = clamp_tile(self.door.get("x", 14), self.door.get("y", 6))
-            self.door["x"], self.door["y"] = self._find_open_tile(self.door["x"], self.door["y"])
-            self.door["x"], self.door["y"] = self._pick_free_reachable((self.door["x"], self.door["y"]), reachable, occupied, solid_set)
-            occupied.add((self.door["x"], self.door["y"]))
+            place(item, 8, 6)
+        for entity, dx, dy in [(self.mix_station, 9, 5), (self.chest, 12, 4), (self.door, 14, 6)]:
+            if entity:
+                place(entity, dx, dy)
 
     def _entity_bob(self, key: str, moving: bool = False):
         phase = self.entity_phase.get(key, 0.0)
