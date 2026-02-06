@@ -223,13 +223,15 @@ Example prompt with explicit per-level controls:
 
 ```text
 A lantern-lit fantasy world with high-detail character portraits.
-Time: night
+Level 1 Time: night
+Level 2 Time: dawn
+Level 3 Time: sunset
 Level 1 Biome: snow
 Level 2 Biome: ruins
 Level 3 Biome: beach
-Level 1 NPC looks like: a sick princess in pale gown; goal is cure
-Level 2 NPC looks like: an old archivist in cracked stone robes; goal is lost_item
-Level 3 NPC looks like: a gate warden in blue steel cloak; goal is key_and_door
+Level 1 Quest NPC style: sick princess in a pale gown; goal is cure
+Level 2 Quest NPC style: old archivist in cracked stone robes; goal is lost_item
+Level 3 Quest NPC style: gate warden in a blue steel cloak; goal is key_and_door
 Hero look: red scarf alchemist, dark blue coat, satchel.
 ```
 
@@ -238,7 +240,11 @@ How precedence works:
 - If only UI sets it, UI is used.
 - If neither prompt nor UI sets it, the generator randomizes from valid options.
 - If you set only `Level 1 Biome` but generate 3 levels, Level 2 and Level 3 biomes/goals are auto-generated unless explicitly set.
-- Global `Time: ...`, `Hero look: ...`, and `NPC look: ...` are treated as Level 1 defaults. Levels 2/3 randomize those unless you provide per-level directives (for example `Level 2 Time: dawn` or `Level 2 NPC looks like ...`).
+- Global `Time: ...`, `Hero look: ...`, and `NPC look: ...` are treated as Level 1 defaults. Levels 2/3 randomize those unless you provide per-level directives (for example `Level 2 Time: dawn` or `Level 2 Quest NPC style: ...`).
+- The first line (for example `A lantern-lit fantasy world with high-detail character portraits.`) is global run context and applies to all levels.
+- A `Level N Quest NPC style: ...` line affects the primary quest NPC for that level.
+- It does not automatically force every NPC sprite in that level to use that same style.
+- Shopkeeper/innkeeper are separate reused NPC roles and can look different from the quest NPC.
 
 Example:
 - UI Level 2 biome = `forest`, but prompt says `Level 2 Biome: snow` → Level 2 uses `snow`.
@@ -254,13 +260,15 @@ Granular prompt example (manual per-level control):
 
 ```text
 A lantern-lit fantasy world with high-detail character portraits.
-Time: night
+Level 1 Time: night
+Level 2 Time: day
+Level 3 Time: sunset
 Level 1 Biome: snow
 Level 2 Biome: ruins
 Level 3 Biome: beach
-Level 1 NPC looks like: sick princess in pale gown, healed version brighter. goal is cure
-Level 2 NPC looks like: hooded relic hunter with bronze lantern. goal is lost_item
-Level 3 NPC looks like: disciplined gate captain in silver cloak. goal is key_and_door
+Level 1 Quest NPC style: sick princess in pale gown, healed version brighter. goal is cure
+Level 2 Quest NPC style: hooded relic hunter with bronze lantern. goal is lost_item
+Level 3 Quest NPC style: disciplined gate captain in silver cloak. goal is key_and_door
 Hero look: red scarf alchemist, dark blue coat, satchel.
 ```
 
