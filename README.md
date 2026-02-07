@@ -1,225 +1,443 @@
-# PromptQuest (Work in Progress..)
+# PromptQuest (Work in progress..)
+PromptQuest is an AI-driven content generator whose output is a playable mini-RPG.
+The game is not the product. It exists to validate the generator.
 
-PromptQuest is an AI-driven content generator whose output is a playable mini-RPG. The game is not the product — it exists to validate the generator. Each generated game is a test harness proving the system works. The focus is the generation pipeline and its properties: reliability, controllability, and cost-aware iteration from an underspecified prompt.
+Each generated game is a test harness and a concrete artifact proving the system works.
+The focus is the generation pipeline and the properties it is designed to have: reliability, controllability, and cost-aware iteration from an underspecified prompt.
 
-**What this project is:** An AI-first generator that converts a single text prompt into a complete, playable adventure run (maps, quests, dialogue, sprites). It combines procedural generation, LLM-generated narrative, and image generation into one cost-aware, cache-backed pipeline designed to be reproducible per run and cheaper on reruns.
+## What This Project Is / Is Not
 
-**What this project is not:** A handcrafted game, a full RPG engine, or a showcase of deep level design or long-form progression.
+### What This Project Is
+- An AI-first generator that converts a single text prompt into a complete, playable adventure run (maps, quests, dialogue, sprites)
+- A system combining procedural generation, LLM-generated narrative, and image generation into one pipeline
+- A cost-aware, cache-backed generation pipeline designed to be reproducible per run and cheaper on reruns
 
-In practice, you type a short prompt like *"a lantern-lit seaside town at dusk"*, choose how many levels you want (1–3), and the generator produces levels (maps + vibe), characters (player + NPCs), items and interactive props, and a goal stack per level with progress UI.
+### What This Project Is Not
+- A handcrafted or content-heavy game
+- An attempt to build a full RPG engine
+- A showcase of deep level design, long-form progression, or a fully designed game
 
-Under the hood it's a **Python** project: a tiny **Flask** web UI for entering your prompt + key and generating content, plus a **Pygame** client that runs the actual game loop and rendering.
+In practice, you type a short prompt like “a lantern-lit seaside town at dusk”, choose how many levels you want, and the generator produces:
+- A run of **levels** (maps + vibe)
+- **Characters** (player + NPCs)
+- **Items + interactive props** (doors, chests, keys, shops, etc.)
+- A **goal stack** per level (a quest log with progress UI)
 
----
+Under the hood it’s a **Python** project:
+- A tiny **Flask** web UI for entering your prompt + key and generating content
+- A **Pygame** client that runs the actual game loop and rendering
+
+Early versions generated nearly everything via AI. To keep the project practical and affordable to run, the generator now bakes a small set of core sprites and reuses them (including the shopkeeper, innkeeper, and the princess sick/healed cure pair), while continuing to generate the rest of the run so that no two runs are exactly the same.
 
 ## Quick Start
 
+1. Create a virtual environment (recommended on macOS/Homebrew because system pip is “externally managed”):
+
 ```bash
-# 1. Create a virtual environment (recommended, required on macOS/Homebrew)
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+```
 
-# 2. Run the generator
+2. Run the game generator:
+
+```bash
 python game_generator.py
 ```
 
-Open the local page shown in the terminal (`http://127.0.0.1:5000`), paste your `OPENAI_API_KEY`, enter a prompt, choose number of levels, and click **Generate**. Then return to the terminal and press **ENTER** to start playing.
+3. Open the local page (shown in the terminal) and:
+- Paste your `OPENAI_API_KEY`
+- Enter a prompt
+- Choose number of levels (1–3)
+- Click **Generate**
 
-## Controls
+Then return to the terminal and press **ENTER** to start playing.
 
-| Key | Action |
-|---|---|
-| `WASD` / Arrow keys | Move |
-| `SPACE` | Interact (talk, open, pick up, use, enter/exit buildings) |
-| `1` / `2` / `3` | Buy items in shops |
-| `N` / `ENTER` | Next level (after objective complete) |
-| `R` | Restart / replay the same run (after finishing) |
-| `ESC` | Quit |
+## Per-Level Biome Control (UI + Prompt)
+You can control biomes in either place:
 
----
+- UI method:
+  - In the generator page, each level card has its own `Level N biome` dropdown.
+  - Example: set `Level 1 biome = snow`, `Level 2 biome = ruins`, `Level 3 biome = beach`.
 
-## How Generation Works
+- Prompt method:
+  - Add directives like:
+    - `Level 1 Biome: snow`
+    - `Level 2 Biome: ruins`
+    - `Level 3 Biome: beach`
 
+- Priority rule:
+  - Prompt biome directive overrides the UI biome for the same level.
+  - If no biome is set in prompt or UI for a level, that level biome is auto-generated randomly from supported biomes.
+
+- Under-specified runs:
+  - If you generate 3 levels but only specify Level 1 biome, Level 2 and Level 3 biomes are auto-generated.
+
+## How It Works (Simple)
 Each level is produced in three layers:
 
-| Layer | Source | What your prompt affects |
-|---|---|---|
-| **Map** | Procedural (code + seed) | Biome, time of day, layout style, themed decor |
-| **Goals** | Fixed goal system (sampled or specified) | Goal stack per level via UI or prompt directives |
-| **Story + Sprites** | AI (text + image) with caching and baked assets | Character/item names, dialogue, visual style |
+1. Map (free, procedural)
+Map layout, decor placement, and “vibe” are generated by code using a finite set of biomes/time-of-day/layout styles plus seeded randomness. Your prompt strongly influences which biome/time/layout is chosen.
+2. Goal (free, sampled)
+Each level plays a goal stack drawn from: `cure`, `key_and_door`, `lost_item`, `repair_bridge`. If you do not specify goals (UI or prompt), the generator auto-selects a valid random goal stack per level.
+3. Story + Sprites (AI)
+Text AI generates names, dialogue, and quest steps. Image AI generates sprites, with cost controls via the Quality dropdown plus baked sprites and local disk caching.
 
-### Prompt → Map Matching
+## At A Glance 
+When you press Generate, it produces a **new playable run** (levels + quests + sprites).
 
-The generator uses AI output plus a keyword-based "hint extractor" to align maps with your prompt. If your prompt implies a biome/time (e.g. *"desert oasis at night"*, *"ruined temple"*), the generator biases terrain, time-of-day palette, and themed decor accordingly.
+| Part | Where it comes from | What your prompt affects |
+| --- | --- | --- |
+| Map | Code (procedural + seeded) | Biome/time/layout/decor “vibe” |
+| Goals | Code (fixed goal system; per-level stacks can be specified; otherwise sampled) | UI checkboxes and/or `Level N:` directives (otherwise the generator picks for you) |
+| Dialogue + sprites | AI (text + image) with caching and baked assets | Character/item styling and flavor |
 
-**Themed decor examples:** desert → cacti, oasis water; beach/harbor → shells, coastline, crates; snow → snow piles; town/market/port → crates, `market_street` layout; ruins/temple/castle → statues, vines, `ruin_ring` layout; forest + night → mushrooms.
+| Reuse vs new | What happens |
+| --- | --- |
+| Reused (to save cost) | Player sprite across levels, shopkeeper/innkeeper sprites across levels, plus baked core sprites if present (shop/inn NPCs, princess cure pair, key props) |
+| New every run | Maps, placements, quest text, NPC names, and (optionally) some item sprites depending on Quality |
 
-### What's Reused vs. Generated Fresh
+**Sprite load order (fastest to slowest)**: baked `assets/sprites/` → local disk cache `generated_sprites/` → image API.
 
-| Reused across levels (cost saving) | New every run |
-|---|---|
-| Player sprite, shopkeeper/innkeeper sprites, baked core sprites (shop/inn NPCs, princess cure pair, key props) | Maps, placements, quest text, NPC names, some item sprites (depending on Quality) |
+## Example Prompt (Per-Level Goal Stacks)
+Try pasting this into the prompt box:
 
-**Sprite load order** (fastest to slowest): baked `assets/sprites/` → local disk cache `generated_sprites/` → image API.
-
----
-
-## Controlling Your Run
-
-You have three surfaces for control — **prompt directives**, **UI controls**, and **implicit inference** — with a clear precedence: prompt directive > UI selection > inferred from prompt keywords > random.
-
-### Biomes
-
-Supported biomes: `meadow`, `forest`, `town`, `beach`, `snow`, `desert`, `ruins`, `castle`.
-
-Set per level via UI dropdown or prompt directive (`Level N Biome: snow`). Unspecified levels get a random biome.
-
-### Goals
-
-Allowed goal types: `cure`, `key_and_door`, `lost_item`, `repair_bridge`.
-
-**Three ways to set goals per level:**
-
-1. **Prompt directives** (highest priority): `Level 1: cure` or `Level 2: cure, lost_item` (stacked).
-2. **UI checkboxes**: Check one or more goals per level. Multiple checked goals are stacked.
-3. **Implicit inference** (for unspecified levels): Keywords in your prompt text may trigger goals — "sick/cure/heal" → `cure`, "key/door/unlock" → `key_and_door`, "lost/missing/stolen" → `lost_item`, "bridge/repair" → `repair_bridge`.
-
-If nothing is specified for a level, the generator picks a random valid goal stack, trying to avoid repeating the same goal type across levels.
-
-### Time of Day and Character Style
-
-- `Level N Time: day | dawn | sunset | night`
-- `Hero look: ...` (applies to all levels)
-- `Level N Quest NPC style: ...` (affects the primary quest NPC for that level only, not shopkeeper/innkeeper)
-
-Global directives (no level number) default to Level 1. Levels 2/3 randomize unless explicitly set.
-
-### Prompt Directive Reference
-
-```text
-Level 1: cure                          # goal
-Level 2: cure, lost_item               # stacked goals
-Level 1 Biome: snow                    # biome
-Level 2 Time: dawn                     # time of day
-Level 1 Quest NPC style: sick princess in a pale gown
-Hero look: red scarf alchemist, dark blue coat, satchel
 ```
-
-### Example Prompts
-
-**Minimal (let the generator decide everything):**
-```text
-A peaceful mountain kingdom under moonlight with warm inns and old stone roads.
-```
-
-**Per-level goals only:**
-```text
 A lantern-lit harbor town at night with wet cobblestone streets, crates by the docks, and a cozy inn.
 Level 1: lost_item
 Level 2: key_and_door
 Level 3: repair_bridge
 ```
 
-**Fully specified:**
+What you’ll typically get (varies run-to-run):
+- Level 1 (lost_item): an NPC asks for a missing item; the item is somewhere on the map; return it to finish the level.
+- Level 2 (key_and_door): a chest spawns; opening it reveals a key; the key unlocks a door.
+- Level 3 (repair_bridge): a broken bridge blocks an area; buy materials in the shop; repair the bridge (visual changes) and cross.
+
+## Controls
+- `WASD` / Arrow keys: Move
+- `SPACE`: Interact (talk, open, pick up, use)
+- `1`, `2`, `3`: Buy options in shops (when you’re inside a shop)
+- `N` / `ENTER`: Next level (after level objective is complete)
+- `R`: Restart / replay the same generated run (after finishing the last level)
+- `ESC`: Quit
+
+## What Prompts Change
+Prompts primarily influence the **setting and vibe**:
+- Terrain style (forest/town/desert/ruins/castle/beach/snow, etc.)
+- Time of day (day/dawn/sunset/night)
+- Themed NPC + item flavor
+- You can set biome per level in UI or prompt directives; if a level biome is not specified, it is randomized from supported biomes
+
+Maps are procedurally generated from a finite set of biomes, time-of-day palettes, and layout styles, then varied by seeds and decor placement.
+
+Goal types come from a **fixed allowed set** to keep gameplay reliable. Per level, the goal stack is determined in this order:
+- Prompt directives override the UI for that same level
+- Otherwise, UI checkboxes define the level’s goal stack
+- Otherwise, prompt keyword hints may be inferred for each unspecified level
+- Otherwise, the generator chooses a random goal stack for that level
+
+The AI fills in the flavor: names, dialogue, item descriptions, and visual style.
+
+If you don’t specify goals, the game picks them and varies them across levels.
+
+### Prompt → Map Matching
+The game uses a mix of:
+- AI output (terrain type/features returned by the world JSON)
+- A prompt “hint extractor” (keyword-based) to strongly align the map with your prompt
+
+If your prompt clearly implies a biome/time (e.g. “desert oasis at night”, “harbor town”, “ruined temple”), the generator will bias/override the terrain/time-of-day and add themed decor so the level looks distinct and on-theme.
+
+### Theme Decor You Might See
+Based on prompt keywords + biome, the map renderer can add extra themed decor such as:
+- Desert: **cacti**, oasis-like water layouts
+- Beach/harbor prompts: **shells**, coastline water bands, crates near paths
+- Snow: **snow piles**
+- Town/market/bazaar/port/harbor: **crates** and busier street layouts (`market_street`)
+- Ruins/temple/castle: **statues** and **vines**, ruin-like layouts (`ruin_ring`)
+- Forest + night/mushroom vibe: **mushrooms**
+
+## Goal Types (And Exactly How They’re Selected)
+
+**Allowed goal types** (hard-coded in `game_generator.py`):
+- `cure`
+- `key_and_door`
+- `lost_item`
+- `repair_bridge`
+
+### How goal selection works (UI + prompt directives)
+This version supports **up to 3 levels** per run.
+
+You have three ways to influence each level’s goal stack:
+
+1. **Per-level goal options (UI checkboxes)** (Goals per level, optional)
+   - Each level has its own set of goal checkboxes.
+   - If you check multiple goals under a level, those goals are **stacked** together for that level (you must complete all of them).
+   - If you leave a level blank, it will be randomized from all allowed goals (and may stack multiple goals).
+   - The generator tries to **avoid repeating** the same goal type across levels when possible.
+
+2. **Per-level explicit goals (inside your prompt)** (Overrides UI for that level)
+    - You can force goals with text like:
+      - `Level 1: cure`
+      - `Level 2: key_and_door`
+      - `Level 3: repair_bridge`
+    - If you specify a goal for a level in the prompt, that level will use it even if you clicked different goals in the UI.
+    - You can also stack goals in the prompt, for example: `Level 2: cure, lost_item`
+
+3. **Implicit goals (for unspecified levels)** (Inferred from your prompt text)
+   - If a level isn’t explicitly set by prompt/UI, the game may infer goals from prompt keywords:
+     - “sick / cure / heal” → `cure`
+     - “key / door / unlock” → `key_and_door`
+     - “lost / missing / stolen” → `lost_item`
+     - “bridge / repair” → `repair_bridge`
+   - Inference is applied per unspecified level. If no hints are found, that level gets a random valid goal stack.
+
+### Prompt Directive Syntax (All Levels)
+Recommended syntax:
+- `Level 1: cure`
+- `Level 2: cure, lost_item`
+- `Level 3: repair_bridge`
+- `Level 1 Biome: meadow | forest | town | beach | snow | desert | ruins | castle`
+- `Level 2 Biome: meadow | forest | town | beach | snow | desert | ruins | castle`
+- `Level 3 Biome: meadow | forest | town | beach | snow | desert | ruins | castle`
+
+Allowed goal tokens:
+- `cure`, `key_and_door`, `lost_item`, `repair_bridge`
+
+These are optional. If you omit a level directive, that level’s goal stack will be chosen from your UI selections (or randomized if left blank).
+If you omit a level biome directive and also leave that level biome blank in UI, the biome is randomly selected.
+
+### Prompt + UI Examples
+You can set the same controls in either place:
+- UI: level count, quality, per-level goals, per-level biome, optional global time
+- Prompt: explicit per-level directives plus style instructions
+
+Three valid workflows:
+- Simple prompt only: write a theme/vibe sentence and let the generator pick goals/biomes/details for each level.
+- Manual UI control: select per-level biome and goals in UI, with little or no prompt directives.
+- Fully specified prompt: use per-level directives (`Level N`, `Level N Biome`, `Time`) plus character style notes.
+- Prompt helper buttons in the UI include all 8 biomes (`meadow`, `forest`, `town`, `beach`, `snow`, `desert`, `ruins`, `castle`) and all times (`day`, `dawn`, `sunset`, `night`).
+
+Example prompt with explicit per-level controls:
+
 ```text
 A lantern-lit fantasy world with high-detail character portraits.
 Level 1 Time: night
-Level 1 Biome: snow
-Level 1 Quest NPC style: sick princess in a pale gown; goal is cure
 Level 2 Time: dawn
-Level 2 Biome: ruins
-Level 2 Quest NPC style: old archivist in cracked stone robes; goal is lost_item
 Level 3 Time: sunset
+Level 1 Biome: snow
+Level 2 Biome: ruins
 Level 3 Biome: beach
+Level 1 Quest NPC style: sick princess in a pale gown; goal is cure
+Level 2 Quest NPC style: old archivist in cracked stone robes; goal is lost_item
 Level 3 Quest NPC style: gate warden in a blue steel cloak; goal is key_and_door
 Hero look: red scarf alchemist, dark blue coat, satchel.
 ```
 
-The same setup works as plain language — the generator can infer intent — but explicit directives guarantee exact results.
+Plain-language version of the same setup:
 
----
+In a lantern-lit fantasy world with high-detail character portraits, Level 1 happens at
+night in snow with a cure objective for a sick princess. Level 2 happens at dawn in
+ruins with a lost-item objective tied to an old archivist in cracked stone robes.
+Level 3 happens at sunset on a beach with a key-and-door objective tied to a gate
+warden in a blue steel cloak. The hero should look like a red-scarf alchemist in a
+dark blue coat with a satchel.
 
-## Quest Types: How to Complete Each One
+How this is interpreted:
+- The generator can infer intent from plain-language prompts (theme, likely goals, likely biome/time cues).
+- For guaranteed per-level control, use explicit directives (`Level N`, `Level N Biome`, `Level N Time`, `goal is ...`).
+- If you under-specify anything in prompt and UI, the generator fills missing values from valid options.
 
-### `cure` — Heal a Sick NPC
-A sick NPC, ingredient items, and a mixing station appear on the map. Talk to the NPC → collect ingredients → use the mixing station → return to heal the NPC. The NPC sprite swaps from "sick" to "healed."
+How precedence works:
+- If prompt and UI both set the same thing for the same level, prompt wins.
+- If only UI sets it, UI is used.
+- If neither prompt nor UI sets it, the generator randomizes from valid options.
+- If you set only `Level 1 Biome` but generate 3 levels, Level 2 and Level 3 biomes/goals are auto-generated unless explicitly set.
+- Global `Time: ...`, `Hero look: ...`, and `NPC look: ...` are treated as Level 1 defaults. Levels 2/3 randomize those unless you provide per-level directives (for example `Level 2 Time: dawn` or `Level 2 Quest NPC style: ...`).
+- The first line (for example `A lantern-lit fantasy world with high-detail character portraits.`) is global run context and applies to all levels.
+- A `Level N Quest NPC style: ...` line affects the primary quest NPC for that level.
+- It does not automatically force every NPC sprite in that level to use that same style.
+- Shopkeeper/innkeeper are separate reused NPC roles and can look different from the quest NPC.
 
-### `key_and_door` — Chest → Key → Door
-A closed chest and a locked door appear. Open the chest → pick up the key → unlock the door.
+Example:
+- UI Level 2 biome = `forest`, but prompt says `Level 2 Biome: snow` → Level 2 uses `snow`.
+- UI leaves Level 3 goals empty, and prompt has no `Level 3:` goal line → Level 3 goals are randomized.
 
-### `lost_item` — Find and Return
-An NPC is missing something; the item is hidden on the map. Talk to the NPC → find the item → return it.
+Minimal prompt example (auto-generated details):
 
-### `repair_bridge` — Shop → Buy → Repair
-A broken bridge blocks an area; a shop sells materials (planks/rope/nails). Buy materials → go to the bridge → interact to repair → cross.
+```text
+A peaceful mountain kingdom under moonlight with warm inns and old stone roads.
+```
 
----
+## Cost / Quality Settings
+The generator UI has a **Quality** dropdown:
+- **Low (cheapest)**: `TEXT_MODEL=gpt-4o-mini`, `IMAGE_MODEL=gpt-image-1` with `quality=low`
+- **Medium (default)**: `TEXT_MODEL=gpt-4o-mini`, `IMAGE_MODEL=gpt-image-1` with `quality=medium`
+- **High (best)**: `TEXT_MODEL=gpt-4o`, `IMAGE_MODEL=gpt-image-1` with `quality=high`
 
-## Buildings: Shops and Inns
+### What the dropdown actually changes
+- The dropdown is sent to the backend as `quality` in the `/generate` request.
+- The server sets:
+  - `Config.TEXT_MODEL` (for world/quest/dialogue JSON)
+  - `Config.IMAGE_QUALITY` (for `gpt-image-1` sprite generation)
 
-Some levels include enterable buildings. Approach a door from outside and press `SPACE` to enter; press `SPACE` near the door inside to exit.
+### Sprite reuse (fewer image calls)
+To reduce cost within a multi-level run:
+- The **player sprite** is reused across all levels (consistent protagonist).
+- The **shop** and **inn host** NPC sprites are generated once and reused across levels.
 
-**Shops:** Press `SPACE` to talk to the shopkeeper, then `1`/`2`/`3` to buy. Your money and inventory update in the UI. The `repair_bridge` quest depends on buying materials here; other quests may still spawn shops for flavor.
+Reuse decision order for recurring NPC roles:
+- If a baked sprite exists in `assets/sprites/manifest.json`, it is used.
+- Else, if a prior level already generated that role (`npc_shop` / `npc_inn`), that image is reused.
+- Else, a new image is generated once, then reused for later levels in the same run.
 
-**Inns:** Check in at the front desk (`SPACE` near inn host, costs money) → enter your numbered room → interact near the bed to sleep. Sleep toggles time of day (`day ↔ night`) and updates the outdoor palette. Press `SPACE` to wake early. The inn lobby includes ambient guest NPCs.
+### Sprite caching (disk)
+Sprite images are cached on disk so reruns can be much cheaper.
+- Cache directory: `generated_sprites/`
+- Cache key includes: image model, image quality, sprite role, and the prompt text for that sprite.
+- If a cache hit exists, the game loads the `.png` from disk and skips the OpenAI image call.
+- Terrain preview tiles are also cached locally in `generated_terrain_tiles/` for faster redraws.
 
----
+Note: `generated_sprites/` is ignored by git by default (it’s a local cache).
 
-## Cost and Quality
+## Pre-Generating Core Sprites (Optional, Recommended)
+This project supports **baking** a small set of core sprites once at **High** quality and saving them into the repo. I recommend doing this (and I do this for the main repo) so the default experience has great-looking shop/inn/props with **fewer image API calls**.
 
-The UI **Quality** dropdown controls both text and image model quality:
+If you fork this repo or make your own version, you can choose to bake your own core sprite set too. It’s optional. Everything still works without baking (the game will just generate those sprites via the image API instead).
 
-| Quality | Text Model | Image Quality | Cost |
-|---|---|---|---|
-| Low | `gpt-4o-mini` | `gpt-image-1` low | Cheapest |
-| Medium (default) | `gpt-4o-mini` | `gpt-image-1` medium | Moderate |
-| High | `gpt-4o` | `gpt-image-1` high | Most expensive |
+### What Gets Baked
+Exactly **14 PNGs + 1 manifest**:
 
-### Cost reduction mechanisms
+- NPCs: `assets/sprites/npc_shop.png`, `assets/sprites/npc_inn.png`
+- Princess cure pair: `assets/sprites/npc_princess_sick.png`, `assets/sprites/npc_princess_healed.png`
+- Props: `assets/sprites/chest.png`, `assets/sprites/key.png`, `assets/sprites/door.png`, `assets/sprites/mix_station.png`
+- Bridge materials: `assets/sprites/mat_planks.png`, `assets/sprites/mat_rope.png`, `assets/sprites/mat_nails.png`
+- Bridge states: `assets/sprites/bridge_broken.png`, `assets/sprites/bridge_fixed.png`
+- Generic item icon: `assets/sprites/item_generic.png`
+- Manifest: `assets/sprites/manifest.json`
 
-**Sprite reuse:** Player, shopkeeper, and innkeeper sprites are generated once per run and reused across levels. Baked sprites (see below) skip generation entirely.
+### What Is The Manifest?
+`assets/sprites/manifest.json` is a small JSON file that maps **sprite keys** (like `npc_shop` or `chest`) to the **PNG filenames** to load. The game reads this file at startup so it knows which baked files to use.
 
-**Disk caching:** All generated sprites are cached in `generated_sprites/` (keyed on model, quality, role, and prompt text). Reruns with the same parameters skip API calls. Terrain preview tiles are cached in `generated_terrain_tiles/`.
-
-### Pre-Baking Core Sprites (Optional, Recommended)
-
-You can bake 14 core sprite PNGs at High quality once and commit them, so the default experience has great-looking assets with fewer API calls.
-
-**What gets baked:** shopkeeper, innkeeper, princess sick/healed pair, chest, key, door, mix station, bridge materials (planks/rope/nails), bridge states (broken/fixed), generic item icon — plus a `manifest.json` mapping sprite keys to filenames.
+### Bake command
+From the repo root:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 python game_generator.py --bake-core --quality high
+```
 
-# Commit baked sprites (optional, for repo distribution)
+This writes PNGs to `assets/sprites/` and a `assets/sprites/manifest.json`.
+
+### Commit and push baked sprites (maintainer workflow)
+```bash
 git add assets/sprites
 git commit -m "Add baked core sprites (high quality)"
 git push
 ```
 
-At runtime, the game checks `assets/sprites/manifest.json` first. If a baked sprite exists for a key, it's used; otherwise it falls back to disk cache, then API generation.
+### How “preloading” works at runtime
+On every run, the game checks `assets/sprites/` first:
+- If a baked sprite file exists for a key (via `assets/sprites/manifest.json`), it is loaded and used.
+- If it’s missing, the game falls back to AI image generation (and/or disk cache).
 
----
+## Quest Types (Examples)
+Each level picks a goal stack (varied across the run):
+- `cure`: Collect ingredients, mix a remedy, heal a sick NPC (NPC starts with a “sick” sprite and swaps to a “healed” sprite on completion).
+- `key_and_door`: Find a chest, open it, get a key, unlock a door.
+- `lost_item`: Search the map for a missing item and return it.
+- `repair_bridge`: Visit a shop, buy materials (bridge planks/rope/nails) with in‑game money, then repair a broken bridge (visual changes from broken → fixed) to reach the objective.
+
+## How To Complete Each Goal
+
+### `cure` (Heal a Sick NPC)
+What you’ll see:
+- An NPC appears on the map in a “sick” state.
+- A few ingredient items appear (collectibles).
+- A mixing station appears (interactive).
+
+How to finish:
+1. Talk to the NPC (`SPACE`) to learn what’s wrong and what you need.
+2. Collect the ingredients by walking over them / interacting (`SPACE`).
+3. Use the mixing station (`SPACE`) once you have ingredients.
+4. Return to the sick NPC and interact (`SPACE`) to heal them.
+5. The NPC sprite swaps to a “healed” version and the quest completes.
+
+### `key_and_door` (Chest → Key → Door)
+What you’ll see:
+- A closed chest, a locked door, and often a short hint from the NPC.
+
+How to finish:
+1. Find and open the chest (`SPACE`).
+2. Pick up the key that appears.
+3. Go to the door and unlock it (`SPACE`) to finish the level objective.
+
+### `lost_item` (Find and Return)
+What you’ll see:
+- An NPC missing something.
+- A “lost” item somewhere on the map.
+
+How to finish:
+1. Talk to the NPC (`SPACE`) to learn what’s missing.
+2. Search the map for the item, then pick it up.
+3. Return to the NPC and interact to complete the quest.
+
+### `repair_bridge` (Shop → Buy Materials → Repair)
+What you’ll see:
+- A broken bridge area that blocks traversal.
+- An enterable shop selling materials (planks/rope/nails).
+
+How to finish:
+1. Enter the shop and buy needed materials (see “Shops + Money” below).
+2. Leave the shop and go to the broken bridge.
+3. Interact at the bridge (`SPACE`) to repair it (if you have materials).
+4. Cross the bridge and finish the level objective.
+
+## Shops + Money
+Some levels include enterable buildings (e.g., a shop/inn).
+- Your money is shown in the UI.
+- In a shop, press `SPACE` to talk to the shopkeeper and see buy instructions.
+- Press `1`/`2`/`3` to buy items; the UI updates your remaining money and inventory.
+- Shop visuals are shelf-based (items are displayed on different shelves rather than floor piles).
+
+### Entering and leaving buildings
+- Approach a building’s **door** from outside.
+- Press `SPACE` to enter.
+- Inside, press `SPACE` near the door to exit back to the same outdoor map.
+
+### How buying ties into goals
+- `repair_bridge` uses the shop to sell required materials.
+- Other goal types may still spawn shops (for flavor and future expansion), but `repair_bridge` is the one that currently depends on buying items.
+
+### Inn Sleeping (Time Change)
+The inn has a two-step flow:
+- Step 1: lobby check-in at the front desk (`SPACE` near inn host). Paying unlocks your numbered room.
+- Step 2: go to the room door in the lobby and enter your private room.
+- In the room, interact near the bed to sleep (same sleep logic as before, with early wake on `SPACE`).
+- After sleep, time still toggles (`day ↔ night`) and the outdoor palette updates.
+- The inn lobby includes additional guest NPCs for ambient dialogue.
 
 ## Repo Layout
-
-| Path | Purpose |
-|---|---|
-| `game_generator.py` | Everything: Flask UI + generator + Pygame engine |
-| `assets/sprites/` | Baked core sprites + manifest |
-| `generated_sprites/` | Sprite disk cache (git-ignored) |
-| `generated_terrain_tiles/` | Terrain tile cache |
-| `.env.example` | Example environment file |
+- `game_generator.py`: everything (Flask UI + generator + Pygame engine)
+- `generated_sprites/`: sprite cache (ignored by git)
+- `.env.example`: example environment file (placeholder only)
 
 ## Troubleshooting
 
-- **`pip install` fails with "externally-managed-environment":** Use the virtualenv steps in Quick Start.
-- **Browser shows blank page:** Use `http://127.0.0.1:5000` (HTTP, not HTTPS).
-- **"Bad request version" in terminal:** Your browser tried HTTPS on the HTTP server. Use `http://` explicitly.
-- **Image generation errors (500s/400s):** The game falls back to placeholder sprites. Re-run or try again later.
+### `pip install` fails with “externally-managed-environment”
+Use the virtualenv steps above (`python3 -m venv .venv` then install inside it).
+
+### Browser shows a blank page
+Make sure you’re visiting **HTTP**, not HTTPS:
+- Use `http://127.0.0.1:5000` (not `https://...`).
+
+### “Bad Request” in the terminal when you open the page
+If you see `Bad request version` logs, it usually means your browser (or an extension) tried to speak **HTTPS** to the local **HTTP** server.
+Use `http://127.0.0.1:5000` explicitly.
+
+### Image generation errors (500s / 400s)
+If the image API fails, the game may fall back to simple placeholder sprites. Re-run generation or try again later.
 
 ## License
-
 Apache-2.0 (see `LICENSE`).
