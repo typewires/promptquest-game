@@ -3377,8 +3377,14 @@ class GameEngine:
 
         # Ensure all critical entities are reachable from the player start.
         ts = self.config.TILE_SIZE
-        start_tile = (int(self.player_x // ts), int(self.player_y // ts))
         solid_set = getattr(self, "solid", set())
+        start_tile = (int(self.player_x // ts), int(self.player_y // ts))
+        # Hard safety: never start inside solid terrain (water/trees/rocks/etc.).
+        if start_tile in solid_set:
+            sx, sy = self._find_open_tile(start_tile[0], start_tile[1], solid=solid_set)
+            start_tile = (sx, sy)
+            self.player_x = sx * ts
+            self.player_y = sy * ts
         reachable = self._compute_reachable(solid_set, start_tile)
         occupied: set[tuple[int, int]] = {start_tile}
 
